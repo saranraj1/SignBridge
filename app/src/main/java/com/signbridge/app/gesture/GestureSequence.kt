@@ -49,14 +49,14 @@ data class SequenceStatistics(
  * Immutable snapshot of a temporal sequence of normalized landmark frames.
  *
  * @property frames Ordered list of frames from oldest to newest (chronological order)
- * @property windowSize Configured maximum capacity of the sequence window
- * @property isReady True when `frames.size == windowSize`
+ * @property windowSize Configured maximum capacity of the sequence window (optional for variable-length sequences)
+ * @property isReady True when sequence has sufficient frames for evaluation
  * @property sequenceId Monotonically increasing ID identifying this specific temporal window instance
  */
 data class TemporalSequence(
     val frames: List<NormalizedLandmarkFrame>,
-    val windowSize: Int,
-    val isReady: Boolean,
+    val windowSize: Int = frames.size,
+    val isReady: Boolean = frames.isNotEmpty(),
     val sequenceId: Long = 0L
 ) {
     val frameCount: Int
@@ -165,5 +165,61 @@ data class TemporalSequence(
             allValidLandmarks = allValid,
             motionVariance = motionVar
         )
+    }
+
+    /**
+     * Computes the list of frame-to-frame instantaneous landmark velocities across the sequence.
+     */
+    fun computeFrameVelocities(): List<Float> {
+        if (frames.size < 2) return emptyList()
+        val velocities = ArrayList<Float>(frames.size - 1)
+        for (i in 1 until frames.size) {
+            velocities.add(computeInstantaneousVelocity(frames[i - 1], frames[i]))
+        }
+        return velocities
+    }
+
+    /**
+     * Generates a character-level motion profile string for the sequence (e.g. "SSSSMMMMMSSSS").
+     * 'S' = Stationary (velocity < movingThreshold)
+     * 'M' = Moving (velocity >= movingThreshold)
+     */
+    fun formatMotionProfile(movingThreshold: Float = 0.035f): String {
+        val velocities = computeFrameVelocities()
+        if (velocities.isEmpty()) return "S"
+        val sb = StringBuilder()
+        sb.append(if (velocities.first() >= movingThreshold) 'M' else 'S')
+        for (v in velocities) {
+            sb.append(if (v >= movingThreshold) 'M' else 'S')
+        }
+        return sb.toString()
+    }
+
+    companion object {
+        /**
+         * Computes the instantaneous landmark velocity (mean Euclidean coordinate displacement)
+         * between two normalized landmark frames.
+         *
+         * Delta L(t, t-1) = 1/21 * sum_{i=0..20} sqrt((x_i^t - x_i^{t-1})^2 + (y_i^t - y_i^{t-1})^2 + (z_i^t - z_i^{t-1})^2)
+         */
+        fun computeInstantaneousVelocity(
+            prevFrame: NormalizedLandmarkFrame,
+            currFrame: NormalizedLandmarkFrame
+        ): Float {
+            if (prevFrame.landmarks.size != 21 || currFrame.landmarks.size != 21) {
+                return 0f
+            }
+
+            var sumDist = 0.0
+            for (i in 0 until 21) {
+                val p1 = prevFrame.landmarks[i]
+                val p2 = currFrame.landmarks[i]
+                val dx = (p2.x - p1.x).toDouble()
+                val dy = (p2.y - p1.y).toDouble()
+                val dz = (p2.z - p1.z).toDouble()
+                sumDist += sqrt(dx * dx + dy * dy + dz * dz)
+            }
+            return (sumDist / 21.0).toFloat()
+        }
     }
 }

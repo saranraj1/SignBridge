@@ -39,19 +39,18 @@ class EnrollmentController {
     }
 
     /**
-     * Evaluates an incoming temporal buffer snapshot during an active recording state.
+     * Evaluates a completed segmented gesture sequence during an active recording state.
      *
-     * @param hasHands Whether at least one hand is currently tracked
-     * @param bufferSnapshot Snapshot of the 30-frame normalized temporal sequence
-     * @return True if a sample was successfully validated and captured
+     * @param sequence Isolated, variable-length normalized gesture sequence
+     * @return True if a sample was successfully validated and stored
      */
-    fun processFrame(hasHands: Boolean, bufferSnapshot: TemporalSequence): Boolean {
-        if (!hasHands || !bufferSnapshot.isReady || bufferSnapshot.frameCount < 5) {
+    fun registerSegmentedSample(sequence: TemporalSequence): Boolean {
+        if (sequence.frameCount < GestureConfig.MIN_GESTURE_DURATION_FRAMES) {
             return false
         }
 
         // Quality check: ensure all frames contain finite, non-NaN values
-        val isValid = bufferSnapshot.frames.all { frame ->
+        val isValid = sequence.frames.all { frame ->
             frame.landmarks.size == 21 && frame.landmarks.all { p ->
                 p.x.isFinite() && p.y.isFinite() && p.z.isFinite()
             }
@@ -63,22 +62,32 @@ class EnrollmentController {
 
         return when (state) {
             EnrollmentState.RECORDING_1 -> {
-                capturedSequences.add(bufferSnapshot)
+                capturedSequences.add(sequence)
                 state = EnrollmentState.CAPTURED_1
                 true
             }
             EnrollmentState.RECORDING_2 -> {
-                capturedSequences.add(bufferSnapshot)
+                capturedSequences.add(sequence)
                 state = EnrollmentState.CAPTURED_2
                 true
             }
             EnrollmentState.RECORDING_3 -> {
-                capturedSequences.add(bufferSnapshot)
+                capturedSequences.add(sequence)
                 state = EnrollmentState.LABELING
                 true
             }
             else -> false
         }
+    }
+
+    /**
+     * Evaluates an incoming temporal buffer snapshot during an active recording state (fallback/legacy).
+     */
+    fun processFrame(hasHands: Boolean, bufferSnapshot: TemporalSequence): Boolean {
+        if (!hasHands || !bufferSnapshot.isReady || bufferSnapshot.frameCount < 5) {
+            return false
+        }
+        return registerSegmentedSample(bufferSnapshot)
     }
 
     /**
