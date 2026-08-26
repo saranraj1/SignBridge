@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">SignBridge+</string>
+    <string name="camera_permission_required">Camera permission is required to track hand landmarks for gesture recognition.</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="status_searching">Searching for hands...</string>
+    <string name="status_tracking">Tracking active</string>
+    <string name="hand_detected_yes">YES</string>
+    <string name="hand_detected_no">NO</string>
+</resources>
