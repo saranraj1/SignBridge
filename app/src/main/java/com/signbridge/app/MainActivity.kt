@@ -14,20 +14,28 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.signbridge.app.camera.CameraManager
 import com.signbridge.app.databinding.ActivityMainBinding
+import com.signbridge.app.gesture.GestureConfig
+import com.signbridge.app.gesture.SequenceStatus
+import com.signbridge.app.gesture.TemporalBuffer
+import com.signbridge.app.preprocessing.LandmarkNormalizer
 import com.signbridge.app.vision.HandLandmarkerHelper
 import com.signbridge.app.vision.VisionFrameResult
 
 /**
- * Main Activity for SignBridge+ Milestone M1.
+ * Main Activity for SignBridge+ (Milestones M1 + M2).
  *
- * Implements the minimal, solid vision foundation:
- * Live Camera preview -> MediaPipe Hand Landmarker (on-device) -> 21 3D landmarks & live metrics.
+ * Pipeline:
+ * Live Camera Preview -> MediaPipe Hand Landmarker -> Landmark Normalization -> 30-Frame Rolling Temporal Buffer
  */
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var handLandmarkerHelper: HandLandmarkerHelper
     private lateinit var cameraManager: CameraManager
+
+    // M2 Preprocessing and Gesture Buffering
+    private val landmarkNormalizer = LandmarkNormalizer()
+    private val temporalBuffer = TemporalBuffer(windowSize = GestureConfig.DEFAULT_TEMPORAL_WINDOW_SIZE)
 
     // Performance instrumentation
     private var lastFpsTimestamp: Long = 0L
@@ -84,6 +92,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         binding.metricsCard.setOnClickListener {
             if (::cameraManager.isInitialized) {
                 cameraManager.switchCamera()
+                temporalBuffer.clear()
                 val lens = if (cameraManager.isFrontCamera) "Front" else "Back"
                 Toast.makeText(this, "Switched to $lens Camera", Toast.LENGTH_SHORT).show()
             }
@@ -129,6 +138,14 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             lastFpsTimestamp = now
         }
 
+        // M2: Process landmark normalization and append to rolling temporal buffer
+        val normalizedFrame = if (GestureConfig.DEFAULT_NORMALIZATION_ENABLED) {
+            landmarkNormalizer.normalize(result)
+        } else {
+            null
+        }
+        val sequenceStatus = temporalBuffer.addFrame(normalizedFrame)
+
         runOnUiThread {
             // Update landmark overlay canvas
             binding.overlayView.setResults(result)
@@ -156,14 +173,34 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#33FF9100"))
             }
 
-            // Actual measured metrics
+            // Actual measured performance metrics
             binding.tvFps.text = if (currentFps > 0) "${String.format("%.1f", currentFps)} FPS" else "-- FPS"
             binding.tvInferenceTime.text = "${result.inferenceLatencyMs} ms"
+
+            // M2: Update Temporal Buffer HUD
+            val currentBufSize = temporalBuffer.size
+            val maxWindowSize = temporalBuffer.windowSize
+            binding.tvBufferCount.text = "$currentBufSize / $maxWindowSize frames"
+
+            when (sequenceStatus) {
+                SequenceStatus.READY -> {
+                    binding.tvSequenceStatus.text = "READY | Norm: YES"
+                    binding.tvSequenceStatus.setTextColor(Color.parseColor("#FF00E676")) // Green
+                }
+                SequenceStatus.FILLING -> {
+                    binding.tvSequenceStatus.text = "FILLING | Norm: YES"
+                    binding.tvSequenceStatus.setTextColor(Color.parseColor("#FF00E5FF")) // Cyan
+                }
+                SequenceStatus.EMPTY -> {
+                    binding.tvSequenceStatus.text = "EMPTY | Norm: YES"
+                    binding.tvSequenceStatus.setTextColor(Color.parseColor("#FFFF9100")) // Orange
+                }
+            }
 
             if (frameCount % 30 == 0) {
                 Log.i(
                     "SignBridgeMetrics",
-                    "Status: ${binding.tvStatusBadge.text} | Hands: ${result.hands.size} | Landmarks: ${result.totalLandmarksCount} | FPS: ${String.format("%.1f", currentFps)} | Latency: ${result.inferenceLatencyMs}ms"
+                    "Status: ${binding.tvStatusBadge.text} | Hands: ${result.hands.size} | Buffer: $currentBufSize/$maxWindowSize ($sequenceStatus) | FPS: ${String.format("%.1f", currentFps)} | Latency: ${result.inferenceLatencyMs}ms"
                 )
             }
         }

@@ -85,11 +85,13 @@ The prototype is not the final product. It exists to prove that few-shot gesture
 ### Milestone M1: Live Hand Landmarks (COMPLETE)
 - **Status:** Verified on physical Android phone (iQOO I2214 / Android 16).
 - **Pipeline:** CameraX Live Stream → Google MediaPipe Tasks Hand Landmarker (`hand_landmarker.task`) → 21 3D landmarks + skeletal overlay + live performance instrumentation.
-- **Measured Performance:**
-  - Real-time hand tracking: 21 landmarks per hand (supports up to 2 hands)
-  - Processing Frame Rate: ~10.0 – 21.3 FPS
-  - Inference Latency: ~70 – 180 ms (CPU delegate)
 - Detailed verification report: [docs/M1_RESULTS.md](docs/M1_RESULTS.md).
+
+### Milestone M2: Landmark Normalization + Temporal Buffer (COMPLETE)
+- **Status:** Verified on physical Android phone (iQOO I2214 / Android 16).
+- **Pipeline:** Raw 21 Hand Landmarks → Translation Normalization (wrist origin $(0,0,0)$) + Scale Normalization (wrist-to-middle MCP distance) → 30-Frame Rolling Temporal Buffer.
+- **Unit Tests:** 13/13 unit tests passed (`LandmarkNormalizerTest`, `TemporalBufferTest`, `LandmarkDataTest`).
+- Detailed verification report: [docs/M2_RESULTS.md](docs/M2_RESULTS.md).
 
 ## How to Build and Run
 
@@ -113,7 +115,8 @@ The prototype is not the final product. It exists to prove that few-shot gesture
 adb shell am start -n com.signbridge.app.debug/com.signbridge.app.MainActivity
 ```
 
-### Current Known Limitations (M1 Scope)
-- Landmarks are in raw image space; normalization and temporal sequence buffering are scheduled for Milestone M2.
-- Recognition algorithms (DTW, few-shot prototypes), gesture enrollment, and TTS are deferred to subsequent milestones.
+### Current Known Limitations (M2 Scope)
+- Recognition algorithms (DTW baseline, few-shot prototype matching), gesture enrollment, and TTS are deferred to subsequent milestones (starting with M3).
+- Single-hand normalization is active; dual-hand coordination is deferred to later milestones.
+
 
