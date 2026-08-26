@@ -51,11 +51,13 @@ data class SequenceStatistics(
  * @property frames Ordered list of frames from oldest to newest (chronological order)
  * @property windowSize Configured maximum capacity of the sequence window
  * @property isReady True when `frames.size == windowSize`
+ * @property sequenceId Monotonically increasing ID identifying this specific temporal window instance
  */
 data class TemporalSequence(
     val frames: List<NormalizedLandmarkFrame>,
     val windowSize: Int,
-    val isReady: Boolean
+    val isReady: Boolean,
+    val sequenceId: Long = 0L
 ) {
     val frameCount: Int
         get() = frames.size
@@ -66,6 +68,12 @@ data class TemporalSequence(
         } else {
             0L
         }
+
+    val oldestTimestampMs: Long
+        get() = if (frames.isNotEmpty()) frames.first().timestampMs else 0L
+
+    val newestTimestampMs: Long
+        get() = if (frames.isNotEmpty()) frames.last().timestampMs else 0L
 
     /**
      * Computes deep descriptive statistics across all frames and landmarks in the sequence.

@@ -35,11 +35,11 @@ import com.signbridge.app.vision.LandmarkPoint
 import com.signbridge.app.vision.VisionFrameResult
 
 /**
- * Main Activity for SignBridge+ (Milestones M1 through M4 + Recognition Stability & Persistence Fixes).
+ * Main Activity for SignBridge+ (M4 Diagnostic & Recognition Investigation).
  *
  * Full Pipeline:
  * CameraX Live Preview -> MediaPipe Tasks Hand Landmarker -> Landmark Normalizer ->
- * 30-Frame Rolling Temporal Buffer -> Teach Mode (3-Shot Capture) / 1-NN DTW Recognition (with Margin Gating) -> Local Persistence
+ * 30-Frame Rolling Temporal Buffer -> Teach Mode (3-Shot Capture) / 1-NN DTW Recognition (with Margin Gating & Diagnostic HUD)
  */
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
 
@@ -56,10 +56,11 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     private val prototypeMatcher = PrototypeMatcher()
     private val enrollmentController = EnrollmentController()
 
-    // Performance instrumentation
+    // Performance & UI State Tracking
     private var lastFpsTimestamp: Long = 0L
     private var frameCount: Int = 0
     private var currentFps: Double = 0.0
+    private var lastDisplayedLabel: String = "--"
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
@@ -81,7 +82,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        setupDeviceInfo()
         setupListeners()
         initHandLandmarker()
         loadOrInitializeGestureProfiles()
@@ -93,14 +93,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             binding.permissionContainer.visibility = View.VISIBLE
             requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
-    }
-
-    private fun setupDeviceInfo() {
-        val manufacturer = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
-        val model = Build.MODEL
-        val androidVersion = Build.VERSION.RELEASE
-        val sdkInt = Build.VERSION.SDK_INT
-        binding.tvDeviceInfo.text = "Device: $manufacturer $model (Android $androidVersion, API $sdkInt) | 3-Shot Calibrated DTW"
     }
 
     private fun setupListeners() {
@@ -338,7 +330,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         }
 
         // M2: Landmark normalization and buffer update
-        val normalizedFrame = if (GestureConfig.DEFAULT_NORMALIZATION_ENABLED) {
+        val normalizedFrame = if (GestureConfig.DEFAULT_NORMALIZATION_ENABLED && result.hasHands) {
             landmarkNormalizer.normalize(result)
         } else {
             null
@@ -348,7 +340,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
         // M4: Handle Teach Mode state machine or live DTW recognition
         var sampleJustCaptured = false
-        var recognitionResult: RecognitionResult? = null
+        val recognitionResult: RecognitionResult
 
         if (enrollmentController.isTeaching) {
             if (enrollmentController.state in listOf(
@@ -364,9 +356,12 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                     temporalBuffer.clear()
                 }
             }
+            recognitionResult = RecognitionResult.sequenceNotReady(GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
         } else {
-            // Live 1-NN DTW recognition with calibrated threshold & ambiguity margin
-            recognitionResult = if (snapshot.isReady) {
+            // Live 1-NN DTW recognition
+            recognitionResult = if (!result.hasHands) {
+                RecognitionResult.noHand(GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+            } else if (snapshot.isReady) {
                 prototypeMatcher.match(
                     snapshot,
                     threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD,
@@ -376,20 +371,28 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 RecognitionResult.sequenceNotReady(GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
             }
 
-            // Detailed telemetry logging for every recognition event
-            if (snapshot.isReady && recognitionResult != null) {
-                val liveStats = snapshot.computeStatistics()
-                Log.d(
-                    "DTWDiagnostics",
-                    "Recognition: [${recognitionResult.formatCandidateDistances()}] | " +
-                            "Winner=${recognitionResult.bestMatch?.id ?: "None"} | " +
-                            "NearestDist=${String.format("%.2f", recognitionResult.nearestDistance)} | " +
-                            "RunnerUp=${recognitionResult.runnerUpMatch?.id ?: "None"} (Dist: ${String.format("%.2f", recognitionResult.runnerUpDistance)}, Margin: ${String.format("%.2f", recognitionResult.margin)}) | " +
-                            "Thresh=${recognitionResult.threshold} | " +
-                            "Status=${recognitionResult.status} | " +
-                            "LiveSeq: ${liveStats.formatSummary()}"
-                )
+            // Diagnostic trace logging for every recognition cycle
+            val liveStats = snapshot.computeStatistics()
+            val uiLabelBeforeUpdate = lastDisplayedLabel
+            val uiLabelAfterUpdate = when (recognitionResult.status) {
+                MatchStatus.MATCH -> recognitionResult.bestMatch?.displayName ?: "--"
+                MatchStatus.UNKNOWN, MatchStatus.AMBIGUOUS -> "UNKNOWN"
+                MatchStatus.SEQUENCE_NOT_READY -> "BUFFERING"
+                MatchStatus.NO_HAND -> "--"
+                MatchStatus.NO_PROTOTYPES -> "NO_PROTOTYPES"
             }
+
+            Log.d(
+                "RecognitionTrace",
+                "Cycle: ts=$now | seqId=#${snapshot.sequenceId} (ts=${snapshot.oldestTimestampMs}..${snapshot.newestTimestampMs}, dur=${snapshot.durationMs}ms) | " +
+                        "Best=${recognitionResult.bestMatch?.displayName ?: "None"} (Dist: ${if (recognitionResult.nearestDistance.isFinite()) String.format("%.2f", recognitionResult.nearestDistance) else "INF"}) | " +
+                        "Second=${recognitionResult.runnerUpMatch?.displayName ?: "None"} (Dist: ${if (recognitionResult.runnerUpDistance.isFinite()) String.format("%.2f", recognitionResult.runnerUpDistance) else "INF"}, Margin: ${String.format("%.2f", recognitionResult.margin)}) | " +
+                        "Status=${recognitionResult.status} | Thresh=${recognitionResult.threshold} | " +
+                        "UI_Before='$uiLabelBeforeUpdate' -> UI_After='$uiLabelAfterUpdate' | " +
+                        "MotionVar=${String.format("%.4f", liveStats.motionVariance)} | Hand=${liveStats.dominantHandedness} | Scale=${String.format("%.3f", liveStats.averageHandScale)}"
+            )
+
+            lastDisplayedLabel = uiLabelAfterUpdate
         }
 
         runOnUiThread {
@@ -401,76 +404,89 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 updateTeachUi()
             }
 
-            // Top HUD: Vision & FPS
+            // Top Status Badge & Hand Tracking
             if (result.hasHands) {
-                binding.tvHandDetected.text = "YES (${result.totalLandmarksCount} pts)"
-                binding.tvHandDetected.setTextColor(Color.parseColor("#FF00E676"))
-
                 binding.tvStatusBadge.text = if (enrollmentController.isTeaching) "TEACHING" else "TRACKING"
                 binding.tvStatusBadge.setTextColor(Color.parseColor("#FF00E676"))
                 binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#3300E676"))
             } else {
-                binding.tvHandDetected.text = "NO (0 pts)"
-                binding.tvHandDetected.setTextColor(Color.parseColor("#FFFF5252"))
-
                 binding.tvStatusBadge.text = "SEARCHING"
                 binding.tvStatusBadge.setTextColor(Color.parseColor("#FFFF9100"))
                 binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#33FF9100"))
             }
 
+            // HUD Row 1: Recognition Status & Label
+            if (enrollmentController.isTeaching) {
+                binding.tvRecognitionStatus.text = "TEACH MODE"
+                binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FF00E5FF"))
+                binding.tvRecognizedLabel.text = enrollmentController.state.name
+                binding.tvRecognizedLabel.setTextColor(Color.parseColor("#FF00E5FF"))
+            } else {
+                when (recognitionResult.status) {
+                    MatchStatus.MATCH -> {
+                        binding.tvRecognitionStatus.text = "MATCH"
+                        binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FF00E676"))
+                        binding.tvRecognizedLabel.text = recognitionResult.recognizedLabel
+                        binding.tvRecognizedLabel.setTextColor(Color.parseColor("#FF00E676"))
+                    }
+                    MatchStatus.UNKNOWN -> {
+                        binding.tvRecognitionStatus.text = "UNKNOWN"
+                        binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FFFF9100"))
+                        binding.tvRecognizedLabel.text = "UNKNOWN"
+                        binding.tvRecognizedLabel.setTextColor(Color.parseColor("#FFFF9100"))
+                    }
+                    MatchStatus.AMBIGUOUS -> {
+                        binding.tvRecognitionStatus.text = "AMBIGUOUS"
+                        binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FFFF5252"))
+                        binding.tvRecognizedLabel.text = "AMBIGUOUS"
+                        binding.tvRecognizedLabel.setTextColor(Color.parseColor("#FFFF5252"))
+                    }
+                    MatchStatus.SEQUENCE_NOT_READY -> {
+                        binding.tvRecognitionStatus.text = "BUFFERING"
+                        binding.tvRecognitionStatus.setTextColor(Color.parseColor("#80FFFFFF"))
+                        binding.tvRecognizedLabel.text = "--"
+                        binding.tvRecognizedLabel.setTextColor(Color.parseColor("#80FFFFFF"))
+                    }
+                    MatchStatus.NO_HAND -> {
+                        binding.tvRecognitionStatus.text = "SEARCHING"
+                        binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FFFF9100"))
+                        binding.tvRecognizedLabel.text = "--"
+                        binding.tvRecognizedLabel.setTextColor(Color.parseColor("#80FFFFFF"))
+                    }
+                    MatchStatus.NO_PROTOTYPES -> {
+                        binding.tvRecognitionStatus.text = "NO PROTOTYPES"
+                        binding.tvRecognitionStatus.setTextColor(Color.parseColor("#80FFFFFF"))
+                        binding.tvRecognizedLabel.text = "--"
+                        binding.tvRecognizedLabel.setTextColor(Color.parseColor("#80FFFFFF"))
+                    }
+                }
+            }
+
+            // HUD Row 2: Best Dist, Runner-Up & Margin
+            val bestDistStr = if (recognitionResult.nearestDistance.isFinite()) String.format("%.2f", recognitionResult.nearestDistance) else "--"
+            val runnerUpDistStr = if (recognitionResult.runnerUpDistance.isFinite()) String.format("%.2f", recognitionResult.runnerUpDistance) else "--"
+            val marginStr = if (recognitionResult.margin.isFinite() && recognitionResult.margin > 0) String.format("%.2f", recognitionResult.margin) else "--"
+            binding.tvBestSecondDist.text = "$bestDistStr / $runnerUpDistStr"
+            binding.tvMarginThreshold.text = "$marginStr / ${GestureConfig.DEFAULT_RECOGNITION_THRESHOLD}"
+
+            // HUD Row 3: Motion Variance, Hand & Sequence Details
+            val liveStats = snapshot.computeStatistics()
+            val motionStr = String.format("%.4f", liveStats.motionVariance)
+            val handStr = if (result.hasHands) "${liveStats.dominantHandedness} (${result.totalLandmarksCount}p)" else "None"
+            binding.tvMotionHand.text = "$motionStr / $handStr"
+
+            val currentBufSize = temporalBuffer.size
+            val maxWindowSize = temporalBuffer.windowSize
+            val durMs = snapshot.durationMs
+            binding.tvSeqIdDuration.text = "$currentBufSize/$maxWindowSize | #${snapshot.sequenceId} | ${durMs}ms"
+
+            // HUD Row 4: Performance & Hardware Profile
             val fpsStr = if (currentFps > 0) String.format("%.1f", currentFps) else "--"
             binding.tvFpsLatency.text = "$fpsStr FPS / ${result.inferenceLatencyMs} ms"
 
-            // M2: Buffer status
-            val currentBufSize = temporalBuffer.size
-            val maxWindowSize = temporalBuffer.windowSize
-            binding.tvBufferCount.text = "$currentBufSize / $maxWindowSize ($sequenceStatus)"
-
-            // M4: Enrolled profiles and prototypes count
             val pCount = personalGestureStore.profileCount
             val protoCount = personalGestureStore.totalPrototypeCount
             binding.tvEnrolledCount.text = "$pCount profiles ($protoCount protos)"
-
-            // M3/M4: Live Recognition Telemetry
-            if (enrollmentController.isTeaching) {
-                binding.tvRecognitionResult.text = "TEACH MODE (${enrollmentController.state})"
-                binding.tvRecognitionResult.setTextColor(Color.parseColor("#FF00E5FF"))
-                binding.tvDtwMetrics.text = "Capturing ${enrollmentController.capturedCount}/3"
-            } else if (recognitionResult != null) {
-                when (recognitionResult.status) {
-                    MatchStatus.MATCH -> {
-                        binding.tvRecognitionResult.text = "MATCH (${recognitionResult.recognizedLabel})"
-                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#FF00E676"))
-                    }
-                    MatchStatus.UNKNOWN -> {
-                        binding.tvRecognitionResult.text = "UNKNOWN"
-                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#FFFF9100"))
-                    }
-                    MatchStatus.AMBIGUOUS -> {
-                        binding.tvRecognitionResult.text = "AMBIGUOUS (Margin < 0.08)"
-                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#FFFF5252"))
-                    }
-                    MatchStatus.SEQUENCE_NOT_READY -> {
-                        binding.tvRecognitionResult.text = "BUFFERING"
-                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#80FFFFFF"))
-                    }
-                    MatchStatus.NO_PROTOTYPES -> {
-                        binding.tvRecognitionResult.text = "NO PROTOTYPES"
-                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#80FFFFFF"))
-                    }
-                }
-
-                val distStr = if (recognitionResult.nearestDistance.isFinite()) String.format("%.2f", recognitionResult.nearestDistance) else "--"
-                val dtwMsStr = if (recognitionResult.totalLatencyMs > 0) "${String.format("%.1f", recognitionResult.totalLatencyMs)} ms" else "-- ms"
-                binding.tvDtwMetrics.text = "$distStr / $dtwMsStr"
-            }
-
-            if (frameCount % 30 == 0) {
-                Log.i(
-                    "SignBridgeMetrics",
-                    "Status: ${binding.tvStatusBadge.text} | Profiles: $pCount ($protoCount protos) | Buffer: $currentBufSize/$maxWindowSize | Recognized: ${recognitionResult?.recognizedLabel ?: enrollmentController.state.name} | FPS: $fpsStr | Latency: ${result.inferenceLatencyMs}ms"
-                )
-            }
         }
     }
 

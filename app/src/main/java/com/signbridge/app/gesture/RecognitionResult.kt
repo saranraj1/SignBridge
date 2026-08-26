@@ -4,6 +4,9 @@ package com.signbridge.app.gesture
  * Status of the gesture recognition match attempt.
  */
 enum class MatchStatus {
+    /** No hand detected in current frame. */
+    NO_HAND,
+
     /** No enrolled prototypes exist in memory to compare against. */
     NO_PROTOTYPES,
 
@@ -61,6 +64,7 @@ data class RecognitionResult(
             MatchStatus.AMBIGUOUS -> "UNKNOWN"
             MatchStatus.SEQUENCE_NOT_READY -> "BUFFERING"
             MatchStatus.NO_PROTOTYPES -> "NO_PROTOTYPES"
+            MatchStatus.NO_HAND -> "SEARCHING"
         }
 
     /**
@@ -75,6 +79,14 @@ data class RecognitionResult(
     }
 
     companion object {
+        fun noHand(threshold: Double): RecognitionResult = RecognitionResult(
+            bestMatch = null,
+            nearestDistance = Double.POSITIVE_INFINITY,
+            threshold = threshold,
+            isAccepted = false,
+            status = MatchStatus.NO_HAND
+        )
+
         fun sequenceNotReady(threshold: Double): RecognitionResult = RecognitionResult(
             bestMatch = null,
             nearestDistance = Double.POSITIVE_INFINITY,

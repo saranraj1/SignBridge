@@ -20,6 +20,8 @@ class TemporalBuffer(
 
     private val lock = Any()
     private val buffer = ArrayDeque<NormalizedLandmarkFrame>(windowSize)
+    private var sequenceCounter: Long = 0L
+    private var consecutiveEmptyFrames: Int = 0
 
     /**
      * Current number of valid frames in the buffer.
@@ -32,6 +34,12 @@ class TemporalBuffer(
      */
     val isReady: Boolean
         get() = synchronized(lock) { buffer.size == windowSize }
+
+    /**
+     * Monotonically increasing sequence revision counter.
+     */
+    val currentSequenceId: Long
+        get() = synchronized(lock) { sequenceCounter }
 
     /**
      * Current state of the temporal sequence buffer.
@@ -48,18 +56,27 @@ class TemporalBuffer(
     /**
      * Appends a new normalized landmark frame to the temporal buffer.
      *
-     * If [frame] is null (e.g. no hand detected or invalid frame), no frame is inserted,
-     * protecting the buffer against corrupted/bogus sequence gaps.
+     * If [frame] is null (e.g. no hand detected or tracking lost):
+     * - Increments consecutive empty frame counter.
+     * - If hand is absent for >= 6 consecutive frames (~0.5 - 1.0s), resets the buffer
+     *   to prevent stale gesture remnants from corrupting subsequent gesture enrollments or recognitions.
      *
      * @param frame Normalized hand landmark frame to add
      * @return Updated [SequenceStatus] of the buffer
      */
     fun addFrame(frame: NormalizedLandmarkFrame?): SequenceStatus {
-        if (frame == null) {
-            return status
-        }
-
         synchronized(lock) {
+            if (frame == null) {
+                consecutiveEmptyFrames++
+                if (consecutiveEmptyFrames >= 6 && buffer.isNotEmpty()) {
+                    buffer.clear()
+                }
+                return status
+            }
+
+            consecutiveEmptyFrames = 0
+            sequenceCounter++
+
             if (buffer.size >= windowSize) {
                 buffer.removeFirst()
             }
@@ -81,7 +98,8 @@ class TemporalBuffer(
             return TemporalSequence(
                 frames = snapshotList,
                 windowSize = windowSize,
-                isReady = snapshotList.size == windowSize
+                isReady = snapshotList.size == windowSize,
+                sequenceId = sequenceCounter
             )
         }
     }
@@ -92,6 +110,7 @@ class TemporalBuffer(
     fun clear() {
         synchronized(lock) {
             buffer.clear()
+            consecutiveEmptyFrames = 0
         }
     }
 }

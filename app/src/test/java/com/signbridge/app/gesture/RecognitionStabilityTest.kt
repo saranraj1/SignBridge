@@ -163,4 +163,43 @@ class RecognitionStabilityTest {
         assertTrue(summary.contains("frames=30"))
         assertTrue(summary.contains("hand=Right"))
     }
+
+    @Test
+    fun testNoHandResultClearsMatch() {
+        val result = RecognitionResult.noHand(0.28)
+        assertEquals(MatchStatus.NO_HAND, result.status)
+        assertEquals("SEARCHING", result.recognizedLabel)
+        assertFalse(result.isAccepted)
+    }
+
+    @Test
+    fun testSequenceIdProgressionAndBufferAutoReset() {
+        val buffer = TemporalBuffer(30)
+        assertEquals(0L, buffer.currentSequenceId)
+
+        for (i in 1..30) {
+            val frame = NormalizedLandmarkFrame(
+                timestampMs = i * 33L,
+                handedness = "Right",
+                landmarks = (0 until 21).map { NormalizedLandmarkPoint(0.1f, 0.1f, 0.1f) },
+                handScale = 1.0f,
+                rawWristPosition = LandmarkPoint(0.5f, 0.5f, 0.0f)
+            )
+            buffer.addFrame(frame)
+        }
+
+        val snapshot = buffer.getSnapshot()
+        assertEquals(30L, snapshot.sequenceId)
+        assertEquals(30, snapshot.frameCount)
+        assertTrue(snapshot.isReady)
+
+        // Simulate 6 consecutive empty frames (hand absent)
+        for (i in 1..6) {
+            buffer.addFrame(null)
+        }
+
+        // Buffer should automatically clear to prevent stale lingering gestures
+        assertEquals(0, buffer.size)
+        assertEquals(SequenceStatus.EMPTY, buffer.status)
+    }
 }
