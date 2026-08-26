@@ -1,10 +1,13 @@
 package com.signbridge.app.gesture
 
+import com.signbridge.app.preprocessing.NormalizedLandmarkFrame
+import com.signbridge.app.preprocessing.NormalizedLandmarkPoint
+import com.signbridge.app.vision.LandmarkPoint
 import java.util.Collections
 import java.util.UUID
 
 /**
- * Thread-safe in-memory store managing personalized gesture profiles.
+ * Thread-safe store managing personalized gesture profiles with defensive immutability.
  */
 class PersonalGestureStore {
 
@@ -20,6 +23,7 @@ class PersonalGestureStore {
 
     /**
      * Creates and registers a new [GestureProfile] from captured demonstrations.
+     * Enforces defensive deep-copying of all landmark frames and coordinates.
      *
      * @param label User-assigned name for the gesture (e.g. "HELP", "YES")
      * @param sequences List of captured temporal sequences (typically 3 demonstrations)
@@ -33,10 +37,20 @@ class PersonalGestureStore {
         val profileId = "profile_${trimmedLabel.lowercase().replace("\\s+".toRegex(), "_")}_${UUID.randomUUID().toString().take(6)}"
 
         val prototypes = sequences.mapIndexed { index, seq ->
+            val defensiveFrames = seq.frames.map { f ->
+                val defensivePoints = f.landmarks.map { p -> NormalizedLandmarkPoint(p.x, p.y, p.z) }
+                NormalizedLandmarkFrame(
+                    timestampMs = f.timestampMs,
+                    handedness = f.handedness,
+                    landmarks = defensivePoints,
+                    handScale = f.handScale,
+                    rawWristPosition = LandmarkPoint(f.rawWristPosition.x, f.rawWristPosition.y, f.rawWristPosition.z)
+                )
+            }
             GesturePrototype(
                 id = "${profileId}_shot_${index + 1}",
                 displayName = trimmedLabel,
-                sequence = seq
+                sequence = TemporalSequence(defensiveFrames, seq.windowSize, isReady = defensiveFrames.size == seq.windowSize)
             )
         }
 

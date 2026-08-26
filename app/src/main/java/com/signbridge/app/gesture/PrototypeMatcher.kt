@@ -3,10 +3,8 @@ package com.signbridge.app.gesture
 import java.util.Collections
 
 /**
- * 1-Nearest-Neighbor (1-NN) Prototype Matcher using Dynamic Time Warping (DTW).
- *
- * Compares live 30-frame temporal sequence snapshots against enrolled in-memory gesture prototypes
- * and applies distance threshold gating to classify as MATCH vs UNKNOWN.
+ * 1-Nearest-Neighbor (1-NN) Prototype Matcher using Dynamic Time Warping (DTW)
+ * with calibrated distance thresholding and ambiguity margin gating.
  */
 class PrototypeMatcher {
 
@@ -20,7 +18,6 @@ class PrototypeMatcher {
      */
     fun addPrototype(prototype: GesturePrototype) {
         synchronized(prototypeList) {
-            // Replace if existing ID matches, otherwise append
             prototypeList.removeAll { it.id == prototype.id }
             prototypeList.add(prototype)
         }
@@ -57,12 +54,14 @@ class PrototypeMatcher {
      * Matches a live temporal sequence against all enrolled prototypes using DTW.
      *
      * @param liveSequence Live sequence snapshot from the temporal buffer
-     * @param threshold Maximum allowable normalized DTW distance to consider a match valid
-     * @return [RecognitionResult] containing nearest match, distances, and MATCH / UNKNOWN verdict
+     * @param threshold Maximum allowable normalized DTW distance (default: [GestureConfig.DEFAULT_RECOGNITION_THRESHOLD])
+     * @param ambiguityMargin Minimum margin required over runner-up class (default: [GestureConfig.DEFAULT_AMBIGUITY_MARGIN])
+     * @return [RecognitionResult] containing nearest match, runner-up, margin, and verdict
      */
     fun match(
         liveSequence: TemporalSequence,
-        threshold: Double = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD
+        threshold: Double = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD,
+        ambiguityMargin: Double = GestureConfig.DEFAULT_AMBIGUITY_MARGIN
     ): RecognitionResult {
         val currentPrototypes = getPrototypes()
 
@@ -91,20 +90,48 @@ class PrototypeMatcher {
             }
         }
 
-        val totalLatencyMs = (System.nanoTime() - startTimeNs) / 1_000_000.0
+        // Identify closest runner-up from a DIFFERENT gesture class to compute ambiguity margin
+        var runnerUpCandidate: MatchCandidate? = null
+        var runnerUpDistance = Double.POSITIVE_INFINITY
 
-        val isAccepted = bestCandidate != null && minDistance <= threshold
-        val status = if (bestCandidate == null || minDistance.isInfinite()) {
-            MatchStatus.UNKNOWN
-        } else if (isAccepted) {
-            MatchStatus.MATCH
-        } else {
-            MatchStatus.UNKNOWN
+        if (bestCandidate != null) {
+            val bestLabel = bestCandidate.prototype.displayName
+            for (cand in candidates) {
+                if (cand.prototype.displayName != bestLabel && cand.dtwResult.isValid) {
+                    if (cand.dtwResult.normalizedDistance < runnerUpDistance) {
+                        runnerUpDistance = cand.dtwResult.normalizedDistance
+                        runnerUpCandidate = cand
+                    }
+                }
+            }
         }
+
+        val totalLatencyMs = (System.nanoTime() - startTimeNs) / 1_000_000.0
+        val margin = if (runnerUpDistance.isFinite() && minDistance.isFinite()) {
+            runnerUpDistance - minDistance
+        } else {
+            Double.POSITIVE_INFINITY
+        }
+
+        // Decision logic: Threshold Gating + Ambiguity Gating
+        val passesThreshold = bestCandidate != null && minDistance <= threshold
+        val isAmbiguous = passesThreshold && runnerUpCandidate != null && margin < ambiguityMargin
+
+        val status = when {
+            bestCandidate == null || minDistance.isInfinite() -> MatchStatus.UNKNOWN
+            !passesThreshold -> MatchStatus.UNKNOWN
+            isAmbiguous -> MatchStatus.AMBIGUOUS
+            else -> MatchStatus.MATCH
+        }
+
+        val isAccepted = status == MatchStatus.MATCH
 
         return RecognitionResult(
             bestMatch = bestCandidate?.prototype,
             nearestDistance = minDistance,
+            runnerUpMatch = runnerUpCandidate?.prototype,
+            runnerUpDistance = runnerUpDistance,
+            margin = if (margin.isInfinite()) 0.0 else margin,
             threshold = threshold,
             isAccepted = isAccepted,
             status = status,

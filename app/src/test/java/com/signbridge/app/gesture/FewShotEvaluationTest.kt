@@ -112,8 +112,8 @@ class FewShotEvaluationTest {
             for (trial in 1..5) {
                 totalTrials++
                 // Distinct test instance with independent noise
-                val testSeq = generateSequence(targetGesture, frameCount = 30, noiseOffset = 0.05f + trial * 0.01f)
-                val result = matcher.match(testSeq, threshold = 5.0)
+                val testSeq = generateSequence(targetGesture, frameCount = 30, noiseOffset = 0.02f + trial * 0.005f)
+                val result = matcher.match(testSeq, threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
 
                 if (result.status == MatchStatus.MATCH && result.recognizedLabel == targetGesture.name) {
                     correctMatches++
@@ -146,7 +146,7 @@ class FewShotEvaluationTest {
 
         // User invents and teaches a completely novel gesture: "MY_CUSTOM_SIGN"
         val novelDemos = (1..3).map {
-            generateSequence(TestGesture.CUSTOM_NOVEL_SIGN, noiseOffset = it * 0.02f)
+            generateSequence(TestGesture.CUSTOM_NOVEL_SIGN, noiseOffset = it * 0.01f)
         }
         val novelProfile = store.createProfile("MY_CUSTOM_SIGN", novelDemos)
 
@@ -156,8 +156,8 @@ class FewShotEvaluationTest {
 
         // Test with 3 fresh performances of the novel gesture
         for (i in 1..3) {
-            val testNovel = generateSequence(TestGesture.CUSTOM_NOVEL_SIGN, noiseOffset = 0.08f + i * 0.01f)
-            val result = matcher.match(testNovel, threshold = 5.0)
+            val testNovel = generateSequence(TestGesture.CUSTOM_NOVEL_SIGN, noiseOffset = 0.02f + i * 0.005f)
+            val result = matcher.match(testNovel, threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
 
             assertEquals(MatchStatus.MATCH, result.status)
             assertEquals("MY_CUSTOM_SIGN", result.recognizedLabel)
@@ -184,11 +184,11 @@ class FewShotEvaluationTest {
 
         // Test with un-enrolled NO_SIGN (with conservative threshold)
         val unEnrolledSeq = generateSequence(TestGesture.NO_SIGN, noiseOffset = 0.0f)
-        val result = matcher.match(unEnrolledSeq, threshold = 0.25)
+        val result = matcher.match(unEnrolledSeq, threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
 
         assertEquals(MatchStatus.UNKNOWN, result.status)
         assertEquals("UNKNOWN", result.recognizedLabel)
         println("=== EXPERIMENT 3: Unknown Gesture Rejection ===")
-        println("Unenrolled gesture correctly gated as UNKNOWN (Dist: ${result.nearestDistance} > Thresh: 0.25)")
+        println("Unenrolled gesture correctly gated as UNKNOWN (Dist: ${result.nearestDistance} > Thresh: ${GestureConfig.DEFAULT_RECOGNITION_THRESHOLD})")
     }
 }

@@ -17,6 +17,8 @@ import com.signbridge.app.databinding.ActivityMainBinding
 import com.signbridge.app.gesture.EnrollmentController
 import com.signbridge.app.gesture.EnrollmentState
 import com.signbridge.app.gesture.GestureConfig
+import com.signbridge.app.gesture.GestureProfile
+import com.signbridge.app.gesture.GestureProfileStorage
 import com.signbridge.app.gesture.GesturePrototype
 import com.signbridge.app.gesture.MatchStatus
 import com.signbridge.app.gesture.PersonalGestureStore
@@ -33,11 +35,11 @@ import com.signbridge.app.vision.LandmarkPoint
 import com.signbridge.app.vision.VisionFrameResult
 
 /**
- * Main Activity for SignBridge+ (Milestones M1 through M4).
+ * Main Activity for SignBridge+ (Milestones M1 through M4 + Recognition Stability & Persistence Fixes).
  *
  * Full Pipeline:
  * CameraX Live Preview -> MediaPipe Tasks Hand Landmarker -> Landmark Normalizer ->
- * 30-Frame Rolling Temporal Buffer -> Teach Mode (3-Shot Capture) / 1-NN DTW Recognition
+ * 30-Frame Rolling Temporal Buffer -> Teach Mode (3-Shot Capture) / 1-NN DTW Recognition (with Margin Gating) -> Local Persistence
  */
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
 
@@ -82,7 +84,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         setupDeviceInfo()
         setupListeners()
         initHandLandmarker()
-        initInitialBenchmarkProfile()
+        loadOrInitializeGestureProfiles()
 
         if (hasCameraPermission()) {
             binding.permissionContainer.visibility = View.GONE
@@ -98,7 +100,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         val model = Build.MODEL
         val androidVersion = Build.VERSION.RELEASE
         val sdkInt = Build.VERSION.SDK_INT
-        binding.tvDeviceInfo.text = "Device: $manufacturer $model (Android $androidVersion, API $sdkInt) | 3-Shot DTW"
+        binding.tvDeviceInfo.text = "Device: $manufacturer $model (Android $androidVersion, API $sdkInt) | 3-Shot Calibrated DTW"
     }
 
     private fun setupListeners() {
@@ -146,10 +148,13 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                     val result = enrollmentController.saveGesture(label, personalGestureStore, prototypeMatcher)
                     if (result.isSuccess) {
                         val profile = result.getOrNull()
+                        // Save all profiles to internal local storage for persistence across restarts
+                        GestureProfileStorage.saveProfiles(this, personalGestureStore.getAllProfiles())
+
                         val intraMean = profile?.meanIntraDistance() ?: 0.0
                         Toast.makeText(
                             this,
-                            "✓ Gesture '${profile?.label}' learned (Mean Intra Dist: ${String.format("%.2f", intraMean)})",
+                            "✓ Gesture '${profile?.label}' saved & persisted! (Intra: ${String.format("%.2f", intraMean)})",
                             Toast.LENGTH_LONG
                         ).show()
                         binding.etGestureLabel.setText("")
@@ -182,7 +187,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             EnrollmentState.TEACH_INTRO -> {
                 binding.tvSampleProgressDots.text = "○ ○ ○"
                 binding.tvTeachStepTitle.text = "Sample 1 of 3"
-                binding.tvTeachInstructions.text = "Tap 'RECORD SAMPLE 1' then perform your gesture steadily."
+                binding.tvTeachInstructions.text = "Position your hand in camera view, then tap 'RECORD SAMPLE 1'."
                 binding.labelInputContainer.visibility = View.GONE
                 binding.btnTeachAction.visibility = View.VISIBLE
                 binding.btnTeachAction.text = "RECORD SAMPLE 1"
@@ -190,7 +195,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             EnrollmentState.RECORDING_1 -> {
                 binding.tvSampleProgressDots.text = "◐ ○ ○"
                 binding.tvTeachStepTitle.text = "Recording Sample 1/3..."
-                binding.tvTeachInstructions.text = "Hold / perform your gesture in camera view until 30 frames are captured."
+                binding.tvTeachInstructions.text = "Perform your gesture steadily in camera view (recording 30 frames)..."
                 binding.labelInputContainer.visibility = View.GONE
                 binding.btnTeachAction.visibility = View.GONE
             }
@@ -205,7 +210,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             EnrollmentState.RECORDING_2 -> {
                 binding.tvSampleProgressDots.text = "● ◐ ○"
                 binding.tvTeachStepTitle.text = "Recording Sample 2/3..."
-                binding.tvTeachInstructions.text = "Hold / perform your gesture in camera view until 30 frames are captured."
+                binding.tvTeachInstructions.text = "Perform your gesture steadily in camera view (recording 30 frames)..."
                 binding.labelInputContainer.visibility = View.GONE
                 binding.btnTeachAction.visibility = View.GONE
             }
@@ -220,7 +225,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             EnrollmentState.RECORDING_3 -> {
                 binding.tvSampleProgressDots.text = "● ● ◐"
                 binding.tvTeachStepTitle.text = "Recording Sample 3/3..."
-                binding.tvTeachInstructions.text = "Hold / perform your gesture in camera view until 30 frames are captured."
+                binding.tvTeachInstructions.text = "Perform your gesture steadily in camera view (recording 30 frames)..."
                 binding.labelInputContainer.visibility = View.GONE
                 binding.btnTeachAction.visibility = View.GONE
             }
@@ -228,7 +233,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             EnrollmentState.LABELING -> {
                 binding.tvSampleProgressDots.text = "● ● ●"
                 binding.tvTeachStepTitle.text = "All 3 Samples Captured! ✓"
-                binding.tvTeachInstructions.text = "Enter a name for this custom gesture and tap SAVE."
+                binding.tvTeachInstructions.text = "Enter a name for this custom gesture and tap SAVE GESTURE."
                 binding.labelInputContainer.visibility = View.VISIBLE
                 binding.btnTeachAction.visibility = View.VISIBLE
                 binding.btnTeachAction.text = "SAVE GESTURE"
@@ -238,7 +243,31 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     /**
-     * Initializes an initial benchmark gesture profile ("HELP") with 3 demonstrations.
+     * Loads persisted gesture profiles from local disk storage.
+     * If no saved profiles exist, seeds the initial benchmark profile ("HELP").
+     */
+    private fun loadOrInitializeGestureProfiles() {
+        val savedProfiles = GestureProfileStorage.loadProfiles(this)
+        personalGestureStore.clearAll()
+        prototypeMatcher.clearPrototypes()
+
+        if (savedProfiles.isNotEmpty()) {
+            for (profile in savedProfiles) {
+                personalGestureStore.addProfile(profile)
+                for (proto in profile.prototypes) {
+                    prototypeMatcher.addPrototype(proto)
+                }
+            }
+            Log.i(TAG, "Restored ${savedProfiles.size} gesture profiles (${prototypeMatcher.prototypeCount} prototypes) from local storage")
+        } else {
+            initInitialBenchmarkProfile()
+            // Persist the seeded profile so disk state is immediately initialized
+            GestureProfileStorage.saveProfiles(this, personalGestureStore.getAllProfiles())
+        }
+    }
+
+    /**
+     * Initializes the default seed gesture profile ("HELP") with 3 demonstrations.
      */
     private fun initInitialBenchmarkProfile() {
         fun makeSequence(noise: Float): TemporalSequence {
@@ -330,15 +359,36 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             ) {
                 sampleJustCaptured = enrollmentController.processFrame(result.hasHands, snapshot)
                 if (sampleJustCaptured) {
+                    val stats = snapshot.computeStatistics()
+                    Log.i(TAG, "Enrollment Sequence Captured: ${stats.formatSummary()}")
                     temporalBuffer.clear()
                 }
             }
         } else {
-            // Live 1-NN DTW recognition
+            // Live 1-NN DTW recognition with calibrated threshold & ambiguity margin
             recognitionResult = if (snapshot.isReady) {
-                prototypeMatcher.match(snapshot, threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+                prototypeMatcher.match(
+                    snapshot,
+                    threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD,
+                    ambiguityMargin = GestureConfig.DEFAULT_AMBIGUITY_MARGIN
+                )
             } else {
                 RecognitionResult.sequenceNotReady(GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+            }
+
+            // Detailed telemetry logging for every recognition event
+            if (snapshot.isReady && recognitionResult != null) {
+                val liveStats = snapshot.computeStatistics()
+                Log.d(
+                    "DTWDiagnostics",
+                    "Recognition: [${recognitionResult.formatCandidateDistances()}] | " +
+                            "Winner=${recognitionResult.bestMatch?.id ?: "None"} | " +
+                            "NearestDist=${String.format("%.2f", recognitionResult.nearestDistance)} | " +
+                            "RunnerUp=${recognitionResult.runnerUpMatch?.id ?: "None"} (Dist: ${String.format("%.2f", recognitionResult.runnerUpDistance)}, Margin: ${String.format("%.2f", recognitionResult.margin)}) | " +
+                            "Thresh=${recognitionResult.threshold} | " +
+                            "Status=${recognitionResult.status} | " +
+                            "LiveSeq: ${liveStats.formatSummary()}"
+                )
             }
         }
 
@@ -395,6 +445,10 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                     MatchStatus.UNKNOWN -> {
                         binding.tvRecognitionResult.text = "UNKNOWN"
                         binding.tvRecognitionResult.setTextColor(Color.parseColor("#FFFF9100"))
+                    }
+                    MatchStatus.AMBIGUOUS -> {
+                        binding.tvRecognitionResult.text = "AMBIGUOUS (Margin < 0.08)"
+                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#FFFF5252"))
                     }
                     MatchStatus.SEQUENCE_NOT_READY -> {
                         binding.tvRecognitionResult.text = "BUFFERING"

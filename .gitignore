@@ -12,3 +12,4 @@ models/*.tflite
 models/*.onnx
 models/*.pt
 models/*.pth
+.kotlin/
