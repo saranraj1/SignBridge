@@ -99,6 +99,12 @@ The prototype is not the final product. It exists to prove that few-shot gesture
 - **Unit Tests:** 28/28 unit tests passed (`DTWTest`, `PrototypeMatcherTest`, `DTWExperimentTest`, `TemporalBufferTest`, `LandmarkNormalizerTest`, `LandmarkDataTest`).
 - Detailed verification report: [docs/M3_RESULTS.md](docs/M3_RESULTS.md).
 
+### Milestone M4: Interactive Few-Shot Enrollment + Teach Mode (COMPLETE)
+- **Status:** Verified on physical Android phone (iQOO I2214 / Android 16).
+- **Pipeline:** Teach Mode Finite State Machine → 3 Demonstrations Capture → GestureProfile (3 prototypes) → PersonalGestureStore → 1-NN DTW Recognition across all enrolled prototypes.
+- **Unit Tests:** 49/49 unit tests passed (`EnrollmentTest`, `FewShotEvaluationTest`, `DTWTest`, `PrototypeMatcherTest`, `DTWExperimentTest`, `TemporalBufferTest`, `LandmarkNormalizerTest`, `LandmarkDataTest`).
+- Detailed verification report: [docs/M4_RESULTS.md](docs/M4_RESULTS.md).
+
 ## How to Build and Run
 
 ### Prerequisites
@@ -121,9 +127,10 @@ The prototype is not the final product. It exists to prove that few-shot gesture
 adb shell am start -n com.signbridge.app.debug/com.signbridge.app.MainActivity
 ```
 
-### Current Known Limitations (M3 Scope)
-- Gesture enrollment UI, multi-shot prototype creation ("Teach Mode"), and TTS are deferred to subsequent milestones (starting with M4).
-- Matching operates on in-memory prototypes; persistent storage is not yet active.
+### Current Known Limitations (M4 Scope)
+- Text-to-Speech (TTS) audio output, persistent SQLite/Room storage, and continuous sentence translation are deferred to subsequent milestones.
+- Single-hand gesture recognition is active; dual-hand coordination is scheduled for future exploration.
+
 
 
 

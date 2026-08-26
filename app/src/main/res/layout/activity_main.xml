@@ -34,7 +34,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:padding="14dp">
 
             <!-- Title & Status Row -->
             <LinearLayout
@@ -48,9 +48,9 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="SignBridge+ [M1+M2+M3]"
+                    android:text="SignBridge+ [M1-M4 Teach Mode]"
                     android:textColor="@color/brand_cyan"
-                    android:textSize="18sp"
+                    android:textSize="17sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -59,20 +59,20 @@
                     android:layout_height="wrap_content"
                     android:background="#3300E676"
                     android:paddingHorizontal="10dp"
-                    android:paddingVertical="4dp"
+                    android:paddingVertical="3dp"
                     android:text="TRACKING"
                     android:textColor="@color/brand_green"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginVertical="10dp"
+                android:layout_marginVertical="8dp"
                 android:background="#33FFFFFF" />
 
-            <!-- Metrics Grid: Row 1 (Vision) -->
+            <!-- Metrics Grid: Row 1 (Vision & FPS) -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -87,17 +87,17 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Hand Detected"
+                        android:text="Hand / Landmarks"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                        android:textSize="10sp" />
 
                     <TextView
                         android:id="@+id/tvHandDetected"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="NO"
+                        android:text="NO (0 pts)"
                         android:textColor="@color/brand_red"
-                        android:textSize="15sp"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -110,80 +110,26 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Hands / Pts"
+                        android:text="Camera FPS / Latency"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                        android:textSize="10sp" />
 
                     <TextView
-                        android:id="@+id/tvHandsCount"
+                        android:id="@+id/tvFpsLatency"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="0 hands (0 pts)"
-                        android:textColor="@color/white"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- Metrics Grid: Row 2 (Performance) -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Camera FPS"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-
-                    <TextView
-                        android:id="@+id/tvFps"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="-- FPS"
+                        android:text="-- FPS / -- ms"
                         android:textColor="@color/brand_cyan"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Inference Latency"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-
-                    <TextView
-                        android:id="@+id/tvInferenceTime"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="-- ms"
-                        android:textColor="@color/brand_orange"
-                        android:textSize="15sp"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Metrics Grid: Row 3 (M2 Temporal Buffer & Normalization) -->
+            <!-- Metrics Grid: Row 2 (M2 Buffer & M4 Teach State) -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="6dp"
                 android:orientation="horizontal">
 
                 <LinearLayout
@@ -195,17 +141,17 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="M2 Buffer (Window: 30)"
+                        android:text="M2 Temporal Buffer"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                        android:textSize="10sp" />
 
                     <TextView
                         android:id="@+id/tvBufferCount"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="0 / 30 frames"
+                        android:text="0 / 30 (EMPTY)"
                         android:textColor="@color/white"
-                        android:textSize="15sp"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -218,26 +164,26 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Sequence / Norm"
+                        android:text="Enrolled Gestures"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                        android:textSize="10sp" />
 
                     <TextView
-                        android:id="@+id/tvSequenceStatus"
+                        android:id="@+id/tvEnrolledCount"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="EMPTY | Norm: YES"
-                        android:textColor="@color/brand_cyan"
-                        android:textSize="15sp"
+                        android:text="0 profiles (0 protos)"
+                        android:textColor="@color/white"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Metrics Grid: Row 4 (M3 Recognition Status & Nearest Match) -->
+            <!-- Metrics Grid: Row 3 (M3/M4 Recognition Result) -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="6dp"
                 android:orientation="horizontal">
 
                 <LinearLayout
@@ -249,71 +195,17 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="M3 Nearest Match"
+                        android:text="Live Recognition"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-
-                    <TextView
-                        android:id="@+id/tvNearestMatch"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="NONE"
-                        android:textColor="@color/white"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="DTW Distance (Thresh: 5.0)"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-
-                    <TextView
-                        android:id="@+id/tvDtwDistance"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="-- / 5.0"
-                        android:textColor="@color/brand_cyan"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- Metrics Grid: Row 5 (M3 Verdict & DTW Latency) -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="M3 Result"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                        android:textSize="10sp" />
 
                     <TextView
                         android:id="@+id/tvRecognitionResult"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="UNKNOWN"
+                        android:text="NO PROTOTYPES"
                         android:textColor="@color/brand_orange"
-                        android:textSize="15sp"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -326,30 +218,164 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="DTW Latency"
+                        android:text="Nearest Dist / DTW ms"
                         android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
+                        android:textSize="10sp" />
 
                     <TextView
-                        android:id="@+id/tvDtwLatency"
+                        android:id="@+id/tvDtwMetrics"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="-- ms"
+                        android:text="-- / -- ms"
                         android:textColor="@color/brand_green"
-                        android:textSize="15sp"
+                        android:textSize="14sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Device Info Footer -->
+            <!-- Device Footer -->
             <TextView
                 android:id="@+id/tvDeviceInfo"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="Target: On-device local inference (MediaPipe + DTW 1-NN)"
+                android:layout_marginTop="8dp"
+                android:text="Target: On-device 3-shot personalized learning"
                 android:textColor="#80FFFFFF"
                 android:textSize="10sp" />
+        </LinearLayout>
+    </androidx.cardview.widget.CardView>
+
+    <!-- Bottom Action Button: Start Teach Mode (When IDLE) -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnStartTeachMode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        android:backgroundTint="@color/brand_cyan"
+        android:paddingHorizontal="24dp"
+        android:paddingVertical="12dp"
+        android:text="+ TEACH NEW GESTURE"
+        android:textColor="@color/black"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        app:cornerRadius="24dp"
+        app:elevation="6dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- Teach Mode Interactive Card (Visible when in Teach Mode) -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/teachModeCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:visibility="gone"
+        app:cardBackgroundColor="#E61A1A1A"
+        app:cardCornerRadius="20dp"
+        app:cardElevation="12dp"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <!-- Teach Mode Header -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="TEACH MODE"
+                    android:textColor="@color/brand_cyan"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvSampleProgressDots"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="● ○ ○"
+                    android:textColor="@color/brand_cyan"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvTeachStepTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Sample 1 of 3"
+                android:textColor="@color/white"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvTeachInstructions"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Hold your hand in front of the camera and perform your custom gesture steadily."
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+
+            <!-- Name Input Container (Visible during LABELING step) -->
+            <LinearLayout
+                android:id="@+id/labelInputContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/etGestureLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#33FFFFFF"
+                    android:hint="Gesture Name (e.g. HELP, YES)"
+                    android:inputType="textCapCharacters"
+                    android:maxLines="1"
+                    android:padding="12dp"
+                    android:textColor="@color/white"
+                    android:textColorHint="#80FFFFFF"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <!-- Action Buttons Row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="end"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCancelTeach"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="CANCEL"
+                    android:textColor="@color/brand_red" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnTeachAction"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:backgroundTint="@color/brand_cyan"
+                    android:text="RECORD SAMPLE 1"
+                    android:textColor="@color/black"
+                    android:textStyle="bold" />
+            </LinearLayout>
         </LinearLayout>
     </androidx.cardview.widget.CardView>
 

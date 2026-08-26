@@ -14,10 +14,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.signbridge.app.camera.CameraManager
 import com.signbridge.app.databinding.ActivityMainBinding
+import com.signbridge.app.gesture.EnrollmentController
+import com.signbridge.app.gesture.EnrollmentState
 import com.signbridge.app.gesture.GestureConfig
 import com.signbridge.app.gesture.GesturePrototype
 import com.signbridge.app.gesture.MatchStatus
+import com.signbridge.app.gesture.PersonalGestureStore
 import com.signbridge.app.gesture.PrototypeMatcher
+import com.signbridge.app.gesture.RecognitionResult
 import com.signbridge.app.gesture.SequenceStatus
 import com.signbridge.app.gesture.TemporalBuffer
 import com.signbridge.app.gesture.TemporalSequence
@@ -27,14 +31,13 @@ import com.signbridge.app.preprocessing.NormalizedLandmarkPoint
 import com.signbridge.app.vision.HandLandmarkerHelper
 import com.signbridge.app.vision.LandmarkPoint
 import com.signbridge.app.vision.VisionFrameResult
-import kotlin.math.sin
 
 /**
- * Main Activity for SignBridge+ (Milestones M1 + M2 + M3).
+ * Main Activity for SignBridge+ (Milestones M1 through M4).
  *
  * Full Pipeline:
- * Live Camera Preview -> MediaPipe Hand Landmarker -> Landmark Normalization ->
- * 30-Frame Rolling Temporal Buffer -> 1-NN Dynamic Time Warping (DTW) -> Threshold Gating (MATCH / UNKNOWN)
+ * CameraX Live Preview -> MediaPipe Tasks Hand Landmarker -> Landmark Normalizer ->
+ * 30-Frame Rolling Temporal Buffer -> Teach Mode (3-Shot Capture) / 1-NN DTW Recognition
  */
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
 
@@ -42,12 +45,14 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     private lateinit var handLandmarkerHelper: HandLandmarkerHelper
     private lateinit var cameraManager: CameraManager
 
-    // M2 Preprocessing and Gesture Buffering
+    // M2 Preprocessing and Buffer
     private val landmarkNormalizer = LandmarkNormalizer()
     private val temporalBuffer = TemporalBuffer(windowSize = GestureConfig.DEFAULT_TEMPORAL_WINDOW_SIZE)
 
-    // M3 DTW Prototype Matching
+    // M3/M4 Personal Store, Matcher, and Teach Mode Controller
+    private val personalGestureStore = PersonalGestureStore()
     private val prototypeMatcher = PrototypeMatcher()
+    private val enrollmentController = EnrollmentController()
 
     // Performance instrumentation
     private var lastFpsTimestamp: Long = 0L
@@ -77,7 +82,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         setupDeviceInfo()
         setupListeners()
         initHandLandmarker()
-        initBenchmarkPrototypes()
+        initInitialBenchmarkProfile()
 
         if (hasCameraPermission()) {
             binding.permissionContainer.visibility = View.GONE
@@ -93,7 +98,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         val model = Build.MODEL
         val androidVersion = Build.VERSION.RELEASE
         val sdkInt = Build.VERSION.SDK_INT
-        binding.tvDeviceInfo.text = "Device: $manufacturer $model (Android $androidVersion, API $sdkInt) | Local DTW"
+        binding.tvDeviceInfo.text = "Device: $manufacturer $model (Android $androidVersion, API $sdkInt) | 3-Shot DTW"
     }
 
     private fun setupListeners() {
@@ -110,29 +115,140 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 Toast.makeText(this, "Switched to $lens Camera", Toast.LENGTH_SHORT).show()
             }
         }
+
+        // Open Teach Mode
+        binding.btnStartTeachMode.setOnClickListener {
+            enrollmentController.startTeaching()
+            temporalBuffer.clear()
+            updateTeachUi()
+        }
+
+        // Cancel Teach Mode
+        binding.btnCancelTeach.setOnClickListener {
+            enrollmentController.cancel()
+            temporalBuffer.clear()
+            updateTeachUi()
+            Toast.makeText(this, "Teach Mode cancelled", Toast.LENGTH_SHORT).show()
+        }
+
+        // Teach Mode Action Button (Record Sample / Save)
+        binding.btnTeachAction.setOnClickListener {
+            when (enrollmentController.state) {
+                EnrollmentState.TEACH_INTRO,
+                EnrollmentState.CAPTURED_1,
+                EnrollmentState.CAPTURED_2 -> {
+                    enrollmentController.startRecordingCurrentSample()
+                    temporalBuffer.clear()
+                    updateTeachUi()
+                }
+                EnrollmentState.LABELING -> {
+                    val label = binding.etGestureLabel.text.toString()
+                    val result = enrollmentController.saveGesture(label, personalGestureStore, prototypeMatcher)
+                    if (result.isSuccess) {
+                        val profile = result.getOrNull()
+                        val intraMean = profile?.meanIntraDistance() ?: 0.0
+                        Toast.makeText(
+                            this,
+                            "✓ Gesture '${profile?.label}' learned (Mean Intra Dist: ${String.format("%.2f", intraMean)})",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        binding.etGestureLabel.setText("")
+                        temporalBuffer.clear()
+                        updateTeachUi()
+                    } else {
+                        Toast.makeText(
+                            this,
+                            "Error: ${result.exceptionOrNull()?.message}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                else -> {}
+            }
+        }
     }
 
-    private fun initHandLandmarker() {
-        handLandmarkerHelper = HandLandmarkerHelper(
-            context = this,
-            currentDelegate = HandLandmarkerHelper.DELEGATE_CPU,
-            landmarkerListener = this
-        )
+    private fun updateTeachUi() {
+        if (!enrollmentController.isTeaching) {
+            binding.teachModeCard.visibility = View.GONE
+            binding.btnStartTeachMode.visibility = View.VISIBLE
+            return
+        }
+
+        binding.teachModeCard.visibility = View.VISIBLE
+        binding.btnStartTeachMode.visibility = View.GONE
+
+        when (enrollmentController.state) {
+            EnrollmentState.TEACH_INTRO -> {
+                binding.tvSampleProgressDots.text = "○ ○ ○"
+                binding.tvTeachStepTitle.text = "Sample 1 of 3"
+                binding.tvTeachInstructions.text = "Tap 'RECORD SAMPLE 1' then perform your gesture steadily."
+                binding.labelInputContainer.visibility = View.GONE
+                binding.btnTeachAction.visibility = View.VISIBLE
+                binding.btnTeachAction.text = "RECORD SAMPLE 1"
+            }
+            EnrollmentState.RECORDING_1 -> {
+                binding.tvSampleProgressDots.text = "◐ ○ ○"
+                binding.tvTeachStepTitle.text = "Recording Sample 1/3..."
+                binding.tvTeachInstructions.text = "Hold / perform your gesture in camera view until 30 frames are captured."
+                binding.labelInputContainer.visibility = View.GONE
+                binding.btnTeachAction.visibility = View.GONE
+            }
+            EnrollmentState.CAPTURED_1 -> {
+                binding.tvSampleProgressDots.text = "● ○ ○"
+                binding.tvTeachStepTitle.text = "Sample 1 Captured! ✓"
+                binding.tvTeachInstructions.text = "Great! Tap 'RECORD SAMPLE 2' and perform the same gesture again."
+                binding.labelInputContainer.visibility = View.GONE
+                binding.btnTeachAction.visibility = View.VISIBLE
+                binding.btnTeachAction.text = "RECORD SAMPLE 2"
+            }
+            EnrollmentState.RECORDING_2 -> {
+                binding.tvSampleProgressDots.text = "● ◐ ○"
+                binding.tvTeachStepTitle.text = "Recording Sample 2/3..."
+                binding.tvTeachInstructions.text = "Hold / perform your gesture in camera view until 30 frames are captured."
+                binding.labelInputContainer.visibility = View.GONE
+                binding.btnTeachAction.visibility = View.GONE
+            }
+            EnrollmentState.CAPTURED_2 -> {
+                binding.tvSampleProgressDots.text = "● ● ○"
+                binding.tvTeachStepTitle.text = "Sample 2 Captured! ✓"
+                binding.tvTeachInstructions.text = "Great! Tap 'RECORD SAMPLE 3' for the final demonstration."
+                binding.labelInputContainer.visibility = View.GONE
+                binding.btnTeachAction.visibility = View.VISIBLE
+                binding.btnTeachAction.text = "RECORD SAMPLE 3"
+            }
+            EnrollmentState.RECORDING_3 -> {
+                binding.tvSampleProgressDots.text = "● ● ◐"
+                binding.tvTeachStepTitle.text = "Recording Sample 3/3..."
+                binding.tvTeachInstructions.text = "Hold / perform your gesture in camera view until 30 frames are captured."
+                binding.labelInputContainer.visibility = View.GONE
+                binding.btnTeachAction.visibility = View.GONE
+            }
+            EnrollmentState.CAPTURED_3,
+            EnrollmentState.LABELING -> {
+                binding.tvSampleProgressDots.text = "● ● ●"
+                binding.tvTeachStepTitle.text = "All 3 Samples Captured! ✓"
+                binding.tvTeachInstructions.text = "Enter a name for this custom gesture and tap SAVE."
+                binding.labelInputContainer.visibility = View.VISIBLE
+                binding.btnTeachAction.visibility = View.VISIBLE
+                binding.btnTeachAction.text = "SAVE GESTURE"
+            }
+            else -> {}
+        }
     }
 
     /**
-     * Initializes in-memory benchmark gesture prototypes for M3 testing.
+     * Initializes an initial benchmark gesture profile ("HELP") with 3 demonstrations.
      */
-    private fun initBenchmarkPrototypes() {
-        fun makeSyntheticPrototype(id: String, name: String, trajectoryFunc: (Float, Int) -> Triple<Float, Float, Float>): GesturePrototype {
+    private fun initInitialBenchmarkProfile() {
+        fun makeSequence(noise: Float): TemporalSequence {
             val frames = (0 until 30).map { step ->
                 val progress = step.toFloat() / 29f
                 val points = (0 until 21).map { i ->
-                    val (dx, dy, dz) = trajectoryFunc(progress, i)
                     NormalizedLandmarkPoint(
-                        x = (i * 0.04f) + dx,
-                        y = (i * 0.03f) + dy,
-                        z = (i * 0.01f) + dz
+                        x = (i * 0.04f) + noise,
+                        y = (i * 0.03f) - (progress * 0.35f) + noise,
+                        z = (i * 0.01f)
                     )
                 }
                 NormalizedLandmarkFrame(
@@ -143,29 +259,23 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                     rawWristPosition = LandmarkPoint(0.5f, 0.5f, 0.0f)
                 )
             }
-            return GesturePrototype(id, name, TemporalSequence(frames, 30, true))
+            return TemporalSequence(frames, 30, true)
         }
 
-        // Prototype 1: Lateral Palm Wave
-        val waveProto = makeSyntheticPrototype("proto_palm_wave", "PALM_WAVE") { p, _ ->
-            val wave = (sin(p * 2 * Math.PI) * 0.35f).toFloat()
-            Triple(wave, 0.0f, 0.0f)
-        }
+        val helpDemos = listOf(makeSequence(0.0f), makeSequence(0.01f), makeSequence(0.02f))
+        personalGestureStore.createProfile("HELP", helpDemos)
 
-        // Prototype 2: Pinch Tap
-        val pinchProto = makeSyntheticPrototype("proto_pinch_tap", "PINCH_TAP") { p, i ->
-            val pinch = if (i in listOf(4, 8)) (1.0f - p) * 0.25f else 0.0f
-            Triple(pinch, pinch, 0.0f)
+        for (proto in personalGestureStore.getAllPrototypes()) {
+            prototypeMatcher.addPrototype(proto)
         }
+    }
 
-        // Prototype 3: Swipe Up
-        val swipeProto = makeSyntheticPrototype("proto_swipe_up", "SWIPE_UP") { p, _ ->
-            Triple(0.0f, -p * 0.45f, p * 0.05f)
-        }
-
-        prototypeMatcher.addPrototype(waveProto)
-        prototypeMatcher.addPrototype(pinchProto)
-        prototypeMatcher.addPrototype(swipeProto)
+    private fun initHandLandmarker() {
+        handLandmarkerHelper = HandLandmarkerHelper(
+            context = this,
+            currentDelegate = HandLandmarkerHelper.DELEGATE_CPU,
+            landmarkerListener = this
+        )
     }
 
     private fun startCameraPipeline() {
@@ -190,7 +300,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     // --- HandLandmarkerHelper.LandmarkerListener Callbacks ---
 
     override fun onResults(result: VisionFrameResult) {
-        // Measure real FPS from incoming results
         val now = SystemClock.uptimeMillis()
         frameCount++
         if (now - lastFpsTimestamp >= 1000) {
@@ -199,110 +308,113 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             lastFpsTimestamp = now
         }
 
-        // M2: Process landmark normalization and append to rolling temporal buffer
+        // M2: Landmark normalization and buffer update
         val normalizedFrame = if (GestureConfig.DEFAULT_NORMALIZATION_ENABLED) {
             landmarkNormalizer.normalize(result)
         } else {
             null
         }
         val sequenceStatus = temporalBuffer.addFrame(normalizedFrame)
-
-        // M3: Perform 1-NN DTW Prototype Matching if sequence is ready
         val snapshot = temporalBuffer.getSnapshot()
-        val recognitionResult = if (snapshot.isReady) {
-            prototypeMatcher.match(snapshot, threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+
+        // M4: Handle Teach Mode state machine or live DTW recognition
+        var sampleJustCaptured = false
+        var recognitionResult: RecognitionResult? = null
+
+        if (enrollmentController.isTeaching) {
+            if (enrollmentController.state in listOf(
+                    EnrollmentState.RECORDING_1,
+                    EnrollmentState.RECORDING_2,
+                    EnrollmentState.RECORDING_3
+                )
+            ) {
+                sampleJustCaptured = enrollmentController.processFrame(result.hasHands, snapshot)
+                if (sampleJustCaptured) {
+                    temporalBuffer.clear()
+                }
+            }
         } else {
-            com.signbridge.app.gesture.RecognitionResult.sequenceNotReady(GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+            // Live 1-NN DTW recognition
+            recognitionResult = if (snapshot.isReady) {
+                prototypeMatcher.match(snapshot, threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+            } else {
+                RecognitionResult.sequenceNotReady(GestureConfig.DEFAULT_RECOGNITION_THRESHOLD)
+            }
         }
 
         runOnUiThread {
-            // Update landmark overlay canvas
+            // Overlay rendering
             binding.overlayView.setResults(result)
 
-            // Update live vision debug metrics UI
+            // Update teach UI if sample was captured
+            if (sampleJustCaptured) {
+                updateTeachUi()
+            }
+
+            // Top HUD: Vision & FPS
             if (result.hasHands) {
-                binding.tvHandDetected.text = getString(R.string.hand_detected_yes)
-                binding.tvHandDetected.setTextColor(Color.parseColor("#FF00E676")) // Green
+                binding.tvHandDetected.text = "YES (${result.totalLandmarksCount} pts)"
+                binding.tvHandDetected.setTextColor(Color.parseColor("#FF00E676"))
 
-                val handsCount = result.hands.size
-                val landmarksCount = result.totalLandmarksCount
-                val handsLabel = if (handsCount == 1) "1 hand" else "$handsCount hands"
-                binding.tvHandsCount.text = "$handsLabel ($landmarksCount pts)"
-
-                binding.tvStatusBadge.text = "TRACKING"
+                binding.tvStatusBadge.text = if (enrollmentController.isTeaching) "TEACHING" else "TRACKING"
                 binding.tvStatusBadge.setTextColor(Color.parseColor("#FF00E676"))
                 binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#3300E676"))
             } else {
-                binding.tvHandDetected.text = getString(R.string.hand_detected_no)
-                binding.tvHandDetected.setTextColor(Color.parseColor("#FFFF5252")) // Red
-                binding.tvHandsCount.text = "0 hands (0 pts)"
+                binding.tvHandDetected.text = "NO (0 pts)"
+                binding.tvHandDetected.setTextColor(Color.parseColor("#FFFF5252"))
 
                 binding.tvStatusBadge.text = "SEARCHING"
                 binding.tvStatusBadge.setTextColor(Color.parseColor("#FFFF9100"))
                 binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#33FF9100"))
             }
 
-            // Performance metrics
-            binding.tvFps.text = if (currentFps > 0) "${String.format("%.1f", currentFps)} FPS" else "-- FPS"
-            binding.tvInferenceTime.text = "${result.inferenceLatencyMs} ms"
+            val fpsStr = if (currentFps > 0) String.format("%.1f", currentFps) else "--"
+            binding.tvFpsLatency.text = "$fpsStr FPS / ${result.inferenceLatencyMs} ms"
 
-            // M2: Temporal Buffer HUD
+            // M2: Buffer status
             val currentBufSize = temporalBuffer.size
             val maxWindowSize = temporalBuffer.windowSize
-            binding.tvBufferCount.text = "$currentBufSize / $maxWindowSize frames"
+            binding.tvBufferCount.text = "$currentBufSize / $maxWindowSize ($sequenceStatus)"
 
-            when (sequenceStatus) {
-                SequenceStatus.READY -> {
-                    binding.tvSequenceStatus.text = "READY | Norm: YES"
-                    binding.tvSequenceStatus.setTextColor(Color.parseColor("#FF00E676")) // Green
-                }
-                SequenceStatus.FILLING -> {
-                    binding.tvSequenceStatus.text = "FILLING | Norm: YES"
-                    binding.tvSequenceStatus.setTextColor(Color.parseColor("#FF00E5FF")) // Cyan
-                }
-                SequenceStatus.EMPTY -> {
-                    binding.tvSequenceStatus.text = "EMPTY | Norm: YES"
-                    binding.tvSequenceStatus.setTextColor(Color.parseColor("#FFFF9100")) // Orange
-                }
-            }
+            // M4: Enrolled profiles and prototypes count
+            val pCount = personalGestureStore.profileCount
+            val protoCount = personalGestureStore.totalPrototypeCount
+            binding.tvEnrolledCount.text = "$pCount profiles ($protoCount protos)"
 
-            // M3: DTW Recognition HUD
-            binding.tvNearestMatch.text = recognitionResult.bestMatch?.displayName ?: "NONE"
-            binding.tvDtwDistance.text = if (recognitionResult.nearestDistance.isFinite()) {
-                "${String.format("%.2f", recognitionResult.nearestDistance)} / ${String.format("%.1f", recognitionResult.threshold)}"
-            } else {
-                "-- / ${String.format("%.1f", recognitionResult.threshold)}"
-            }
+            // M3/M4: Live Recognition Telemetry
+            if (enrollmentController.isTeaching) {
+                binding.tvRecognitionResult.text = "TEACH MODE (${enrollmentController.state})"
+                binding.tvRecognitionResult.setTextColor(Color.parseColor("#FF00E5FF"))
+                binding.tvDtwMetrics.text = "Capturing ${enrollmentController.capturedCount}/3"
+            } else if (recognitionResult != null) {
+                when (recognitionResult.status) {
+                    MatchStatus.MATCH -> {
+                        binding.tvRecognitionResult.text = "MATCH (${recognitionResult.recognizedLabel})"
+                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#FF00E676"))
+                    }
+                    MatchStatus.UNKNOWN -> {
+                        binding.tvRecognitionResult.text = "UNKNOWN"
+                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#FFFF9100"))
+                    }
+                    MatchStatus.SEQUENCE_NOT_READY -> {
+                        binding.tvRecognitionResult.text = "BUFFERING"
+                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#80FFFFFF"))
+                    }
+                    MatchStatus.NO_PROTOTYPES -> {
+                        binding.tvRecognitionResult.text = "NO PROTOTYPES"
+                        binding.tvRecognitionResult.setTextColor(Color.parseColor("#80FFFFFF"))
+                    }
+                }
 
-            when (recognitionResult.status) {
-                MatchStatus.MATCH -> {
-                    binding.tvRecognitionResult.text = "MATCH (${recognitionResult.recognizedLabel})"
-                    binding.tvRecognitionResult.setTextColor(Color.parseColor("#FF00E676")) // Green
-                }
-                MatchStatus.UNKNOWN -> {
-                    binding.tvRecognitionResult.text = "UNKNOWN"
-                    binding.tvRecognitionResult.setTextColor(Color.parseColor("#FFFF9100")) // Orange
-                }
-                MatchStatus.SEQUENCE_NOT_READY -> {
-                    binding.tvRecognitionResult.text = "BUFFERING"
-                    binding.tvRecognitionResult.setTextColor(Color.parseColor("#80FFFFFF"))
-                }
-                MatchStatus.NO_PROTOTYPES -> {
-                    binding.tvRecognitionResult.text = "NO PROTOTYPES"
-                    binding.tvRecognitionResult.setTextColor(Color.parseColor("#80FFFFFF"))
-                }
-            }
-
-            binding.tvDtwLatency.text = if (recognitionResult.totalLatencyMs > 0) {
-                "${String.format("%.1f", recognitionResult.totalLatencyMs)} ms"
-            } else {
-                "-- ms"
+                val distStr = if (recognitionResult.nearestDistance.isFinite()) String.format("%.2f", recognitionResult.nearestDistance) else "--"
+                val dtwMsStr = if (recognitionResult.totalLatencyMs > 0) "${String.format("%.1f", recognitionResult.totalLatencyMs)} ms" else "-- ms"
+                binding.tvDtwMetrics.text = "$distStr / $dtwMsStr"
             }
 
             if (frameCount % 30 == 0) {
                 Log.i(
                     "SignBridgeMetrics",
-                    "Status: ${binding.tvStatusBadge.text} | Hands: ${result.hands.size} | Buffer: $currentBufSize/$maxWindowSize | Nearest: ${recognitionResult.bestMatch?.displayName ?: "NONE"} (Dist: ${if (recognitionResult.nearestDistance.isFinite()) String.format("%.2f", recognitionResult.nearestDistance) else "--"}) -> ${recognitionResult.status} | DTW: ${String.format("%.1f", recognitionResult.totalLatencyMs)}ms | FPS: ${String.format("%.1f", currentFps)} | Latency: ${result.inferenceLatencyMs}ms"
+                    "Status: ${binding.tvStatusBadge.text} | Profiles: $pCount ($protoCount protos) | Buffer: $currentBufSize/$maxWindowSize | Recognized: ${recognitionResult?.recognizedLabel ?: enrollmentController.state.name} | FPS: $fpsStr | Latency: ${result.inferenceLatencyMs}ms"
                 )
             }
         }
