@@ -2,9 +2,10 @@ package com.signbridge.app.gesture
 
 /**
  * Global configuration constants for gesture preprocessing, event-driven segmentation,
- * and 1-NN DTW prototype recognition.
+ * and 66-D 1-NN DTW prototype recognition.
  *
- * All segmentation thresholds are calibrated from physical-device telemetry on iQOO I2214.
+ * Production representation: 66-D (63-D Normalized Hand Shape + 3-D Cumulative Wrist Trajectory).
+ * Thresholds derived empirically from physical 66-D DTW distributions.
  */
 object GestureConfig {
     /**
@@ -18,36 +19,37 @@ object GestureConfig {
     const val DEFAULT_NORMALIZATION_ENABLED = true
 
     /**
-     * Calibrated distance threshold for 1-NN DTW prototype recognition.
-     * Normalized DTW distance <= threshold is classified as MATCH; otherwise UNKNOWN.
+     * Production 66-D DTW Recognition Threshold:
+     * - Same gesture repetitions: DTW ≈ 0.019 – 0.080
+     * - Stationary resting hand: DTW ≈ 0.416
+     * - Distinct/Unrelated gestures: DTW ≈ 0.547 – 1.005
+     * Threshold 0.26 sits with wide safety margins: 0.08 << 0.26 << 0.41.
      */
-    const val DEFAULT_RECOGNITION_THRESHOLD = 0.32
+    const val DEFAULT_RECOGNITION_THRESHOLD = 0.26
 
     /**
-     * Minimum distance margin required between the best matching gesture class
-     * and the runner-up gesture class to prevent ambiguous misclassifications.
+     * Minimum distance margin required between best match and runner-up match
+     * to prevent ambiguous misclassifications.
      */
-    const val DEFAULT_AMBIGUITY_MARGIN = 0.06
+    const val DEFAULT_AMBIGUITY_MARGIN = 0.08
 
     // ============================
     // GESTURE SEGMENTATION
     // ============================
 
     /**
-     * Minimum instantaneous landmark velocity required to trigger gesture motion onset.
-     * Calibrated above resting hand jitter (resting 95th pct = 0.0165).
+     * Minimum combined velocity required to trigger gesture motion onset.
+     * Combines finger articulation and scaled wrist movement.
      */
     const val MOTION_START_VELOCITY_THRESHOLD = 0.028f
 
     /**
-     * Maximum instantaneous landmark velocity below which motion is considered idle/settled.
-     * Set with slight hysteresis below start threshold.
+     * Maximum combined velocity below which motion is considered idle/settled.
      */
-    const val MOTION_END_VELOCITY_THRESHOLD = 0.024f
+    const val MOTION_END_VELOCITY_THRESHOLD = 0.022f
 
     /**
      * Number of consecutive high-velocity frames required to initiate CAPTURING.
-     * 2 frames at ~10-15 FPS = ~150-200ms of intentional motion.
      */
     const val MOTION_START_CONSECUTIVE_FRAMES = 2
 
@@ -69,7 +71,6 @@ object GestureConfig {
 
     /**
      * Number of frames to ignore after a hand first appears in the camera frame.
-     * 3 frames ≈ 200-300ms of hand entry stabilization.
      */
     const val HAND_STABILIZATION_FRAMES = 3
 

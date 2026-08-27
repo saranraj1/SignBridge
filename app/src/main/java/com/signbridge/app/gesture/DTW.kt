@@ -6,25 +6,26 @@ import kotlin.math.sqrt
  * Pure Kotlin mathematical implementation of Dynamic Time Warping (DTW).
  *
  * Computes the optimal temporal alignment and cumulative Euclidean distance between two
- * normalized landmark sequences of arbitrary duration.
+ * 66-dimensional feature sequences (63-D normalized hand shape + 3-D cumulative wrist displacement)
+ * of arbitrary duration.
  */
 object DTW {
 
     /**
-     * Computes the DTW distance between two [TemporalSequence] instances.
+     * Computes the DTW distance between two [TemporalSequence] instances using the production 66-D representation.
      *
      * @param sequenceA First temporal sequence
      * @param sequenceB Second temporal sequence
      * @return [DTWResult] containing accumulated cost and length-normalized distance
      */
     fun computeDistance(sequenceA: TemporalSequence, sequenceB: TemporalSequence): DTWResult {
-        val vectorsA = sequenceA.frames.map { it.toFeatureVector() }
-        val vectorsB = sequenceB.frames.map { it.toFeatureVector() }
+        val vectorsA = sequenceA.toFeatureVectors66D()
+        val vectorsB = sequenceB.toFeatureVectors66D()
         return computeDistance(vectorsA, vectorsB)
     }
 
     /**
-     * Computes the DTW distance between two lists of 63-dimensional feature vectors.
+     * Computes the DTW distance between two lists of feature vectors.
      *
      * @param seqA Sequence A of frame feature vectors
      * @param seqB Sequence B of frame feature vectors
@@ -98,7 +99,7 @@ object DTW {
     }
 
     /**
-     * Computes the Euclidean distance between two 63-dimensional frame feature vectors.
+     * Computes the Euclidean distance between two feature vectors of arbitrary identical dimension.
      *
      * @param f1 First frame feature vector
      * @param f2 Second frame feature vector

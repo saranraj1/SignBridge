@@ -28,6 +28,7 @@ import com.signbridge.app.gesture.MatchStatus
 import com.signbridge.app.gesture.PersonalGestureStore
 import com.signbridge.app.gesture.PrototypeMatcher
 import com.signbridge.app.gesture.RecognitionResult
+import com.signbridge.app.gesture.RepresentationExperiment
 import com.signbridge.app.gesture.SegmentationEvent
 import com.signbridge.app.gesture.SegmenterState
 import com.signbridge.app.gesture.TemporalSequence
@@ -600,6 +601,9 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 val pearsonCorr = liveSeq.computeTrajectoryPearsonCorrelation(proto.sequence, 20)
                 val protoStats = proto.sequence.computeStatistics()
 
+                // Dual-Representation Experiment: compare 63-D baseline vs 66-D hybrid
+                val dualComp = RepresentationExperiment.compareRepresentations(liveSeq, proto.sequence)
+
                 // Phase 7: Handedness check
                 val handMatch = if (liveStats.dominantHandedness.equals(protoStats.dominantHandedness, ignoreCase = true)) "MATCH" else "MISMATCH!"
 
@@ -609,6 +613,8 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                         "PearsonCorr=${String.format("%.4f", pearsonCorr)} | " +
                         "Handedness: Live=${liveStats.dominantHandedness} vs Proto=${protoStats.dominantHandedness} ($handMatch) | " +
                         "LiveLen=${liveSeq.frameCount}p vs ProtoLen=${proto.sequence.frameCount}p")
+
+                Log.i("M4DualRepExperiment", "  P${pIdx + 1} [${proto.id}] DUAL-REP: ${dualComp.formatSummary()}")
             }
         }
 

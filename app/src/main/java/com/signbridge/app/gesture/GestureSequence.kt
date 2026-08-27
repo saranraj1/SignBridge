@@ -103,6 +103,29 @@ data class TemporalSequence(
         get() = if (frames.isNotEmpty()) frames.last().timestampMs else 0L
 
     /**
+     * Extracts the production 66-dimensional feature vectors:
+     * - 63-D normalized hand shape (wrist-relative normalized coordinates)
+     * - 3-D cumulative global wrist displacement relative to frame 0: (wrist(t) - wrist(0)) / scale(t)
+     */
+    fun toFeatureVectors66D(): List<FloatArray> {
+        if (frames.isEmpty()) return emptyList()
+        val baseWrist = frames.first().rawWristPosition
+
+        return frames.map { frame ->
+            val vec63 = frame.toFeatureVector()
+            val vec66 = FloatArray(66)
+            System.arraycopy(vec63, 0, vec66, 0, 63)
+
+            val scale = if (frame.handScale > 1e-5f) frame.handScale else 1f
+            vec66[63] = (frame.rawWristPosition.x - baseWrist.x) / scale
+            vec66[64] = (frame.rawWristPosition.y - baseWrist.y) / scale
+            vec66[65] = (frame.rawWristPosition.z - baseWrist.z) / scale
+
+            vec66
+        }
+    }
+
+    /**
      * Computes the coordinate checksum across all landmarks in a single frame.
      */
     fun computeFrameChecksum(frameIndex: Int): Double {
@@ -322,7 +345,7 @@ data class TemporalSequence(
     }
 
     /**
-     * Phase 9: Computes frame-to-frame Euclidean distance after linear temporal resampling.
+     * Computes frame-to-frame Euclidean distance after linear temporal resampling.
      */
     fun computeResampledEuclideanDistance(other: TemporalSequence, targetLength: Int = 20): Double {
         if (this.frames.isEmpty() || other.frames.isEmpty()) return Double.POSITIVE_INFINITY
@@ -337,7 +360,7 @@ data class TemporalSequence(
     }
 
     /**
-     * Phase 9: Computes the mean Pearson correlation coefficient between landmark coordinate trajectories.
+     * Computes the mean Pearson correlation coefficient between landmark coordinate trajectories.
      */
     fun computeTrajectoryPearsonCorrelation(other: TemporalSequence, targetLength: Int = 20): Double {
         if (this.frames.isEmpty() || other.frames.isEmpty()) return 0.0
@@ -379,9 +402,7 @@ data class TemporalSequence(
     companion object {
         /**
          * Computes the instantaneous landmark velocity (mean Euclidean coordinate displacement)
-         * between two normalized landmark frames.
-         *
-         * Delta L(t, t-1) = 1/21 * sum_{i=0..20} sqrt((x_i^t - x_i^{t-1})^2 + (y_i^t - y_i^{t-1})^2 + (z_i^t - z_i^{t-1})^2)
+         * between two normalized landmark frames, accounting for both finger articulation and spatial wrist movement.
          */
         fun computeInstantaneousVelocity(
             prevFrame: NormalizedLandmarkFrame,
@@ -400,7 +421,16 @@ data class TemporalSequence(
                 val dz = (p2.z - p1.z).toDouble()
                 sumDist += sqrt(dx * dx + dy * dy + dz * dz)
             }
-            return (sumDist / 21.0).toFloat()
+            val fingerVel = (sumDist / 21.0).toFloat()
+
+            // Wrist displacement in camera space scaled by hand size
+            val scale = if (currFrame.handScale > 1e-5f) currFrame.handScale else 1f
+            val wdx = (currFrame.rawWristPosition.x - prevFrame.rawWristPosition.x) / scale
+            val wdy = (currFrame.rawWristPosition.y - prevFrame.rawWristPosition.y) / scale
+            val wdz = (currFrame.rawWristPosition.z - prevFrame.rawWristPosition.z) / scale
+            val wristVel = sqrt(wdx * wdx + wdy * wdy + wdz * wdz).toFloat()
+
+            return fingerVel + 0.5f * wristVel
         }
     }
 }

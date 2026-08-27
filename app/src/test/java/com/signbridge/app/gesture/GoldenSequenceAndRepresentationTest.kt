@@ -291,11 +291,10 @@ class GoldenSequenceAndRepresentationTest {
         println("Normalized Wrist X Displacement: ${String.format("%.4f", normWristDisplacement)} (Wrist-relative)")
         println("Normalized Mean Velocity: ${String.format("%.6f", normMeanVel)}")
 
-        // Mathematical proof:
         // Because normalized wrist is ALWAYS (0,0,0), normalized wrist displacement is 0.0.
         assertEquals(0.0f, normWristDisplacement, 1e-6f)
-        // Because fingers did not move relative to wrist, normalized landmark velocity is near 0.0.
-        assertTrue("Normalized velocity of pure translation is near zero (<0.001)", normMeanVel < 0.001f)
+        // With combined velocity calculation, global wrist translation is now successfully captured!
+        assertTrue("Combined velocity of translation is detected (>0.01)", normMeanVel > 0.01f)
 
         // SCENARIO B: PURE FINGER ARTICULATION (Stationary wrist, fingers flexing into fist)
         val articulationFramesRaw = ArrayList<HandLandmarkData>()
