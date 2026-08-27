@@ -1,5 +1,6 @@
 package com.signbridge.app.preprocessing
 
+import android.util.Log
 import com.signbridge.app.vision.HandLandmarkData
 import com.signbridge.app.vision.LandmarkPoint
 import com.signbridge.app.vision.VisionFrameResult
@@ -49,8 +50,6 @@ class LandmarkNormalizer(
         val wrist = rawLandmarks[WRIST_INDEX]
 
         // 2. Reference landmark for scale: Middle-finger MCP (index 9)
-        // Why index 9? The palm bone structure from wrist (0) to middle MCP (9) is anatomically
-        // rigid and invariant to finger flexion, curling, or articulation.
         val middleMcp = rawLandmarks[MIDDLE_MCP_INDEX]
 
         val dxScale = middleMcp.x - wrist.x
@@ -83,6 +82,30 @@ class LandmarkNormalizer(
             landmarks = normalizedPoints,
             handScale = handScale,
             rawWristPosition = wrist
+        )
+    }
+
+    /**
+     * Phase 6: Diagnostic logger for verifying normalization properties.
+     */
+    fun logDiagnosticVerification(rawHand: HandLandmarkData, normFrame: NormalizedLandmarkFrame) {
+        val rawWrist = rawHand.landmarks[WRIST_INDEX]
+        val rawMiddle = rawHand.landmarks[MIDDLE_MCP_INDEX]
+        val normWrist = normFrame.landmarks[WRIST_INDEX]
+        val normMiddle = normFrame.landmarks[MIDDLE_MCP_INDEX]
+
+        val normDist = sqrt(
+            (normMiddle.x - normWrist.x) * (normMiddle.x - normWrist.x) +
+                    (normMiddle.y - normWrist.y) * (normMiddle.y - normWrist.y) +
+                    (normMiddle.z - normWrist.z) * (normMiddle.z - normWrist.z)
+        )
+
+        Log.d(
+            "M4ForensicNorm",
+            "NORM VERIFY: scale=${String.format("%.4f", normFrame.handScale)} | " +
+                    "rawWrist=(${String.format("%.3f", rawWrist.x)}, ${String.format("%.3f", rawWrist.y)}, ${String.format("%.3f", rawWrist.z)}) | " +
+                    "normWrist=(${String.format("%.3f", normWrist.x)}, ${String.format("%.3f", normWrist.y)}, ${String.format("%.3f", normWrist.z)}) | " +
+                    "normMiddleDist=${String.format("%.4f", normDist)} (should be 1.0000)"
         )
     }
 

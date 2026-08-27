@@ -3,7 +3,6 @@ package com.signbridge.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +15,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.signbridge.app.camera.CameraManager
 import com.signbridge.app.databinding.ActivityMainBinding
+import com.signbridge.app.gesture.DTW
+import com.signbridge.app.gesture.DTWResult
 import com.signbridge.app.gesture.EnrollmentController
 import com.signbridge.app.gesture.EnrollmentState
 import com.signbridge.app.gesture.GestureConfig
@@ -31,28 +32,31 @@ import com.signbridge.app.gesture.SegmentationEvent
 import com.signbridge.app.gesture.SegmenterState
 import com.signbridge.app.gesture.TemporalSequence
 import com.signbridge.app.preprocessing.LandmarkNormalizer
-import com.signbridge.app.preprocessing.NormalizedLandmarkFrame
-import com.signbridge.app.preprocessing.NormalizedLandmarkPoint
 import com.signbridge.app.vision.HandLandmarkerHelper
-import com.signbridge.app.vision.LandmarkPoint
 import com.signbridge.app.vision.VisionFrameResult
 
 /**
  * Recognition UI Display Lifecycle states.
+ *
+ * NO_HAND → HAND_DETECTED → SEARCHING → CAPTURING → RECOGNIZING → RESULT_DISPLAY → SEARCHING
  */
 enum class DisplayLifecycleState {
+    /** MediaPipe sees no hand at all. */
+    NO_HAND,
+    /** Hand just appeared — stabilizing. */
+    HAND_DETECTED,
+    /** Hand is stable, waiting for gesture motion. */
     SEARCHING,
+    /** Active gesture being captured. */
     CAPTURING,
+    /** DTW matching in progress. */
     RECOGNIZING,
+    /** Match or Unknown result displayed. */
     RESULT_DISPLAY
 }
 
 /**
- * Main Activity for SignBridge+ (M4.5 Event-Driven Gesture Segmentation & Recognition).
- *
- * Full Pipeline:
- * CameraX Live Preview -> MediaPipe Tasks Hand Landmarker -> Landmark Normalizer ->
- * Event-Driven Gesture Segmenter -> 1-NN DTW Recognition (Executed ONCE per gesture) -> Result Hold & Auto-Reset.
+ * Main Activity for SignBridge+ (M4.5 Forensic Diagnostic Suite).
  */
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
 
@@ -63,8 +67,8 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     // M2 Preprocessing
     private val landmarkNormalizer = LandmarkNormalizer()
 
-    // M4.5 Event-Driven Gesture Segmenter
-    private val gestureSegmenter = GestureSegmenter()
+    // M4.5 Event-Driven Gesture Segmenter with Manual Bypass
+    private val gestureSegmenter = GestureSegmenter(debugLogger = { tag, msg -> Log.d(tag, msg) })
 
     // M3/M4 Personal Store, Matcher, and Teach Mode Controller
     private val personalGestureStore = PersonalGestureStore()
@@ -73,7 +77,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     // Recognition Lifecycle & Result Hold
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var displayState: DisplayLifecycleState = DisplayLifecycleState.SEARCHING
+    private var displayState: DisplayLifecycleState = DisplayLifecycleState.NO_HAND
     private var lastActiveResult: RecognitionResult? = null
     private var lastResultTimestamp: Long = 0L
     private var dtwCallCount: Long = 0L
@@ -84,9 +88,17 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     private var currentFps: Double = 0.0
     private var lastVelocity: Float = 0f
 
+    // Phase 4 tracking: Store last 3 teach and last 3 live sequences
+    private val teachHistory = mutableListOf<TemporalSequence>()
+    private val liveHistory = mutableListOf<TemporalSequence>()
+
     private val resultResetRunnable = Runnable {
         if (displayState == DisplayLifecycleState.RESULT_DISPLAY) {
-            displayState = DisplayLifecycleState.SEARCHING
+            displayState = if (gestureSegmenter.handAbsent) {
+                DisplayLifecycleState.NO_HAND
+            } else {
+                DisplayLifecycleState.SEARCHING
+            }
             lastActiveResult = null
             updateRecognitionDisplay()
         }
@@ -134,27 +146,52 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         binding.metricsCard.setOnClickListener {
             if (::cameraManager.isInitialized) {
                 cameraManager.switchCamera()
-                gestureSegmenter.reset()
-                displayState = DisplayLifecycleState.SEARCHING
+                gestureSegmenter.fullReset()
+                displayState = DisplayLifecycleState.NO_HAND
                 lastActiveResult = null
                 val lens = if (cameraManager.isFrontCamera) "Front" else "Back"
                 Toast.makeText(this, "Switched to $lens Camera", Toast.LENGTH_SHORT).show()
             }
         }
 
+        // Phase 8: Manual Recording Bypass Button
+        binding.btnManualRecord.setOnClickListener {
+            if (!gestureSegmenter.isManualRecording) {
+                // START manual recording
+                gestureSegmenter.startManualRecording()
+                binding.btnManualRecord.text = "■ STOP RECORDING & EVALUATE"
+                binding.btnManualRecord.setBackgroundColor(Color.parseColor("#FFFF5252"))
+                displayState = DisplayLifecycleState.CAPTURING
+                updateRecognitionDisplay()
+            } else {
+                // STOP manual recording
+                val event = gestureSegmenter.stopManualRecording()
+                binding.btnManualRecord.text = "● MANUAL RECORD [BYPASS SEGMENTER]"
+                binding.btnManualRecord.setBackgroundColor(Color.parseColor("#FF6200EE"))
+
+                if (event is SegmentationEvent.Completed) {
+                    processCompletedGesture(event)
+                } else if (event is SegmentationEvent.Rejected) {
+                    Toast.makeText(this, "Manual capture rejected: ${event.reason}", Toast.LENGTH_SHORT).show()
+                    displayState = DisplayLifecycleState.SEARCHING
+                    updateRecognitionDisplay()
+                }
+            }
+        }
+
         // Open Teach Mode
         binding.btnStartTeachMode.setOnClickListener {
             enrollmentController.startTeaching()
-            gestureSegmenter.reset()
-            displayState = DisplayLifecycleState.SEARCHING
+            gestureSegmenter.fullReset()
+            displayState = DisplayLifecycleState.NO_HAND
             updateTeachUi()
         }
 
         // Cancel Teach Mode
         binding.btnCancelTeach.setOnClickListener {
             enrollmentController.cancel()
-            gestureSegmenter.reset()
-            displayState = DisplayLifecycleState.SEARCHING
+            gestureSegmenter.fullReset()
+            displayState = DisplayLifecycleState.NO_HAND
             updateTeachUi()
             Toast.makeText(this, "Teach Mode cancelled", Toast.LENGTH_SHORT).show()
         }
@@ -166,7 +203,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 EnrollmentState.CAPTURED_1,
                 EnrollmentState.CAPTURED_2 -> {
                     enrollmentController.startRecordingCurrentSample()
-                    gestureSegmenter.reset()
+                    gestureSegmenter.fullReset()
                     updateTeachUi()
                 }
                 EnrollmentState.LABELING -> {
@@ -176,6 +213,16 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                         val profile = result.getOrNull()
                         GestureProfileStorage.saveProfiles(this, personalGestureStore.getAllProfiles())
 
+                        // Track taught prototypes for Phase 4 Asymmetry
+                        if (profile != null) {
+                            teachHistory.clear()
+                            for (p in profile.prototypes) {
+                                teachHistory.add(p.sequence)
+                            }
+                            // Run Phase 2 Self-Match verification
+                            runPhase2SelfMatchTest(profile)
+                        }
+
                         val intraMean = profile?.meanIntraDistance() ?: 0.0
                         Toast.makeText(
                             this,
@@ -183,8 +230,8 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                             Toast.LENGTH_LONG
                         ).show()
                         binding.etGestureLabel.setText("")
-                        gestureSegmenter.reset()
-                        displayState = DisplayLifecycleState.SEARCHING
+                        gestureSegmenter.fullReset()
+                        displayState = DisplayLifecycleState.NO_HAND
                         updateTeachUi()
                     } else {
                         Toast.makeText(
@@ -202,18 +249,18 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     private fun updateTeachUi() {
         if (!enrollmentController.isTeaching) {
             binding.teachModeCard.visibility = View.GONE
-            binding.btnStartTeachMode.visibility = View.VISIBLE
+            binding.bottomButtonContainer.visibility = View.VISIBLE
             return
         }
 
         binding.teachModeCard.visibility = View.VISIBLE
-        binding.btnStartTeachMode.visibility = View.GONE
+        binding.bottomButtonContainer.visibility = View.GONE
 
         when (enrollmentController.state) {
             EnrollmentState.TEACH_INTRO -> {
                 binding.tvSampleProgressDots.text = "○ ○ ○"
                 binding.tvTeachStepTitle.text = "Sample 1 of 3"
-                binding.tvTeachInstructions.text = "Position your hand in camera view, then tap 'RECORD SAMPLE 1'."
+                binding.tvTeachInstructions.text = "Position your hand in camera view, then tap 'RECORD SAMPLE 1' (or use MANUAL RECORD)."
                 binding.labelInputContainer.visibility = View.GONE
                 binding.btnTeachAction.visibility = View.VISIBLE
                 binding.btnTeachAction.text = "RECORD SAMPLE 1"
@@ -269,58 +316,29 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     private fun loadOrInitializeGestureProfiles() {
-        val savedProfiles = GestureProfileStorage.loadProfiles(this)
-        personalGestureStore.clearAll()
-        prototypeMatcher.clearPrototypes()
-
-        if (savedProfiles.isNotEmpty()) {
-            for (profile in savedProfiles) {
+        val restoredProfiles = GestureProfileStorage.loadProfiles(this)
+        if (restoredProfiles.isNotEmpty()) {
+            personalGestureStore.clearAll()
+            prototypeMatcher.clearPrototypes()
+            for (profile in restoredProfiles) {
                 personalGestureStore.addProfile(profile)
                 for (proto in profile.prototypes) {
                     prototypeMatcher.addPrototype(proto)
                 }
-            }
-            Log.i(TAG, "Restored ${savedProfiles.size} gesture profiles (${prototypeMatcher.prototypeCount} prototypes) from local storage")
-        } else {
-            initInitialBenchmarkProfile()
-            GestureProfileStorage.saveProfiles(this, personalGestureStore.getAllProfiles())
-        }
-    }
-
-    private fun initInitialBenchmarkProfile() {
-        fun makeSequence(noise: Float): TemporalSequence {
-            val frames = (0 until 30).map { step ->
-                val progress = step.toFloat() / 29f
-                val points = (0 until 21).map { i ->
-                    NormalizedLandmarkPoint(
-                        x = (i * 0.04f) + noise,
-                        y = (i * 0.03f) - (progress * 0.35f) + noise,
-                        z = (i * 0.01f)
-                    )
+                val protoSummary = profile.prototypes.joinToString(" | ") { p ->
+                    "id=${p.id}, frames=${p.sequence.frameCount}, ready=${p.sequence.isReady}, ws=${p.sequence.windowSize}"
                 }
-                NormalizedLandmarkFrame(
-                    timestampMs = (step * 33L),
-                    handedness = "Right",
-                    landmarks = points,
-                    handScale = 1.0f,
-                    rawWristPosition = LandmarkPoint(0.5f, 0.5f, 0.0f)
-                )
+                Log.i(TAG, "  Profile '${profile.label}': ${profile.prototypes.size} protos → [$protoSummary]")
             }
-            return TemporalSequence(frames, 30, true)
-        }
-
-        val helpDemos = listOf(makeSequence(0.0f), makeSequence(0.01f), makeSequence(0.02f))
-        personalGestureStore.createProfile("HELP", helpDemos)
-
-        for (proto in personalGestureStore.getAllPrototypes()) {
-            prototypeMatcher.addPrototype(proto)
+            Log.i(TAG, "Restored ${restoredProfiles.size} gesture profiles (${personalGestureStore.totalPrototypeCount} prototypes) from local storage")
+        } else {
+            Log.w(TAG, "No saved gesture profiles found. Teach Mode required to enroll gestures.")
         }
     }
 
     private fun initHandLandmarker() {
         handLandmarkerHelper = HandLandmarkerHelper(
             context = this,
-            currentDelegate = HandLandmarkerHelper.DELEGATE_CPU,
             landmarkerListener = this
         )
     }
@@ -357,7 +375,13 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
         // M2: Landmark normalization
         val normalizedFrame = if (GestureConfig.DEFAULT_NORMALIZATION_ENABLED && result.hasHands) {
-            landmarkNormalizer.normalize(result)
+            val primaryHand = result.hands.maxByOrNull { it.score } ?: result.hands[0]
+            val norm = landmarkNormalizer.normalizeHand(primaryHand, result.timestampMs)
+            if (norm != null && frameCount % 30 == 0) {
+                // Phase 6: Periodic normalization diagnostic check
+                landmarkNormalizer.logDiagnosticVerification(primaryHand, norm)
+            }
+            norm
         } else {
             null
         }
@@ -369,58 +393,39 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         when (segEvent) {
             is SegmentationEvent.Progress -> {
                 lastVelocity = segEvent.currentVelocity
-                if (segEvent.state == SegmenterState.CAPTURING) {
-                    mainHandler.removeCallbacks(resultResetRunnable)
-                    displayState = DisplayLifecycleState.CAPTURING
+                when (segEvent.state) {
+                    SegmenterState.STABILIZING -> {
+                        if (displayState != DisplayLifecycleState.RESULT_DISPLAY) {
+                            displayState = DisplayLifecycleState.HAND_DETECTED
+                        }
+                    }
+                    SegmenterState.IDLE -> {
+                        if (displayState != DisplayLifecycleState.RESULT_DISPLAY) {
+                            displayState = DisplayLifecycleState.SEARCHING
+                        }
+                    }
+                    SegmenterState.CAPTURING,
+                    SegmenterState.MANUAL_RECORDING -> {
+                        mainHandler.removeCallbacks(resultResetRunnable)
+                        displayState = DisplayLifecycleState.CAPTURING
+                    }
                 }
             }
 
             is SegmentationEvent.Completed -> {
-                val completedSeq = segEvent.sequence
-                val stats = completedSeq.computeStatistics()
-
-                Log.i(
-                    "GestureSegmenter",
-                    "Completed Gesture: raw=${segEvent.rawFrameCount}p -> trimmed=${segEvent.trimmedFrameCount}p, " +
-                            "dur=${completedSeq.durationMs}ms, meanVel=${String.format("%.4f", segEvent.meanVelocity)}, " +
-                            "motionVar=${String.format("%.4f", stats.motionVariance)}"
-                )
-
-                if (enrollmentController.isTeaching) {
-                    // Teach Mode: Register sample into enrollment FSM
-                    sampleJustCaptured = enrollmentController.registerSegmentedSample(completedSeq)
-                } else {
-                    // Live Recognition Mode: Execute DTW ONCE
-                    displayState = DisplayLifecycleState.RECOGNIZING
-                    dtwCallCount++
-
-                    val recognitionResult = prototypeMatcher.match(
-                        completedSeq,
-                        threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD,
-                        ambiguityMargin = GestureConfig.DEFAULT_AMBIGUITY_MARGIN
-                    )
-
-                    lastActiveResult = recognitionResult
-                    lastResultTimestamp = now
-                    displayState = DisplayLifecycleState.RESULT_DISPLAY
-
-                    Log.i(
-                        "EventRecognition",
-                        "DTW #$dtwCallCount Result: Status=${recognitionResult.status} | " +
-                                "Best=${recognitionResult.bestMatch?.displayName ?: "None"} (Dist=${String.format("%.2f", recognitionResult.nearestDistance)}) | " +
-                                "Second=${recognitionResult.runnerUpMatch?.displayName ?: "None"} (Dist=${String.format("%.2f", recognitionResult.runnerUpDistance)}, Margin=${String.format("%.2f", recognitionResult.margin)}) | " +
-                                "Candidates: [${recognitionResult.formatCandidateDistances()}]"
-                    )
-
-                    // Schedule auto-reset back to SEARCHING after timeout
-                    mainHandler.removeCallbacks(resultResetRunnable)
-                    mainHandler.postDelayed(resultResetRunnable, GestureConfig.RESULT_DISPLAY_DURATION_MS)
-                }
+                sampleJustCaptured = processCompletedGesture(segEvent)
             }
 
             is SegmentationEvent.Rejected -> {
                 Log.d("GestureSegmenter", "Rejected: ${segEvent.reason}")
             }
+        }
+
+        // Handle explicit NO_HAND when no hand is detected
+        if (!result.hasHands && displayState != DisplayLifecycleState.RESULT_DISPLAY) {
+            displayState = DisplayLifecycleState.NO_HAND
+            lastActiveResult = null
+            mainHandler.removeCallbacks(resultResetRunnable)
         }
 
         runOnUiThread {
@@ -430,18 +435,18 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                 updateTeachUi()
             }
 
-            // Top Status Badge & Hand Tracking
+            // Top Status Badge
             if (result.hasHands) {
                 binding.tvStatusBadge.text = if (enrollmentController.isTeaching) "TEACHING" else "TRACKING"
                 binding.tvStatusBadge.setTextColor(Color.parseColor("#FF00E676"))
                 binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#3300E676"))
             } else {
-                binding.tvStatusBadge.text = "SEARCHING"
-                binding.tvStatusBadge.setTextColor(Color.parseColor("#FFFF9100"))
-                binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#33FF9100"))
+                binding.tvStatusBadge.text = "NO HAND"
+                binding.tvStatusBadge.setTextColor(Color.parseColor("#FFFF5252"))
+                binding.tvStatusBadge.setBackgroundColor(Color.parseColor("#33FF5252"))
             }
 
-            updateRecognitionDisplay(result.hasHands)
+            updateRecognitionDisplay()
 
             // Performance & Enrolled Profiles
             val fpsStr = if (currentFps > 0) String.format("%.1f", currentFps) else "--"
@@ -454,9 +459,187 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     /**
+     * Processes a completed gesture sequence from either automatic segmentation or manual bypass.
+     */
+    private fun processCompletedGesture(segEvent: SegmentationEvent.Completed): Boolean {
+        val completedSeq = segEvent.sequence
+        val now = SystemClock.uptimeMillis()
+        var sampleCaptured = false
+
+        // Phase 1: Comprehensive trace of the completed gesture
+        logDetailedSequenceTrace("M4ForensicTrace", "COMPLETED_GESTURE", completedSeq, segEvent.endReason)
+
+        if (enrollmentController.isTeaching) {
+            // Teach Mode: Register sample into enrollment FSM
+            sampleCaptured = enrollmentController.registerSegmentedSample(completedSeq)
+            Log.i("TeachMode", "Registered Sample ${enrollmentController.capturedCount}/3 (frames=${completedSeq.frameCount})")
+        } else {
+            // Live Recognition Mode: Execute DTW ONCE
+            displayState = DisplayLifecycleState.RECOGNIZING
+            dtwCallCount++
+
+            // Track live history for Phase 4 Asymmetry
+            liveHistory.add(completedSeq)
+            if (liveHistory.size > 3) liveHistory.removeAt(0)
+
+            val recognitionResult = prototypeMatcher.match(
+                completedSeq,
+                threshold = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD,
+                ambiguityMargin = GestureConfig.DEFAULT_AMBIGUITY_MARGIN
+            )
+
+            lastActiveResult = recognitionResult
+            lastResultTimestamp = now
+            displayState = DisplayLifecycleState.RESULT_DISPLAY
+
+            Log.i(
+                "EventRecognition",
+                "DTW #$dtwCallCount Result: Status=${recognitionResult.status} | " +
+                        "Best=${recognitionResult.bestMatch?.displayName ?: "None"} (Dist=${String.format("%.2f", recognitionResult.nearestDistance)}) | " +
+                        "Second=${recognitionResult.runnerUpMatch?.displayName ?: "None"} (Dist=${String.format("%.2f", recognitionResult.runnerUpDistance)}, Margin=${String.format("%.2f", recognitionResult.margin)}) | " +
+                        "Candidates: [${recognitionResult.formatCandidateDistances()}]"
+            )
+
+            // ===== PHASES 3, 4, 7, 9 FORENSIC DIAGNOSTICS =====
+            runLiveRecognitionDiagnostics(completedSeq, recognitionResult)
+
+            // Schedule auto-reset back to SEARCHING after timeout
+            mainHandler.removeCallbacks(resultResetRunnable)
+            mainHandler.postDelayed(resultResetRunnable, GestureConfig.RESULT_DISPLAY_DURATION_MS)
+        }
+
+        return sampleCaptured
+    }
+
+    /**
+     * Phase 1: Trace complete gesture with checksums, bounds, frame counts, handedness, and velocity stats.
+     */
+    private fun logDetailedSequenceTrace(
+        tag: String,
+        stage: String,
+        seq: TemporalSequence,
+        endReason: String = "N/A"
+    ) {
+        val stats = seq.computeStatistics()
+        val vStats = stats.velocityStats
+
+        Log.i(tag, "══════════════════════════════════════════════════════════")
+        Log.i(tag, "[$stage] SeqID=${seq.sequenceId} | Frames=${seq.frameCount} | Dur=${seq.durationMs}ms | EndReason=$endReason")
+        Log.i(tag, "  Handedness: ${stats.dominantHandedness} | Scale: ${String.format("%.4f", stats.averageHandScale)}")
+        Log.i(tag, "  Checksums: Total=${String.format("%.4f", stats.totalChecksum)} | Frame[0]=${String.format("%.4f", stats.firstFrameChecksum)} | Frame[N-1]=${String.format("%.4f", stats.lastFrameChecksum)}")
+        Log.i(tag, "  Bounds: X=[${String.format("%.3f", stats.minX)}..${String.format("%.3f", stats.maxX)}], Y=[${String.format("%.3f", stats.minY)}..${String.format("%.3f", stats.maxY)}], Z=[${String.format("%.3f", stats.minZ)}..${String.format("%.3f", stats.maxZ)}]")
+        Log.i(tag, "  Velocity: [${vStats.formatSummary()}] | MotionVar=${String.format("%.4f", stats.motionVariance)}")
+        Log.i(tag, "  Motion Profile: ${seq.formatMotionProfile()}")
+        Log.i(tag, "══════════════════════════════════════════════════════════")
+    }
+
+    /**
+     * Phase 2: Self-Match Test.
+     * Evaluates DTW(P1, P1), DTW(P1, P2), DTW(P1, P3), round-trip persistence DTW(original, restored).
+     */
+    private fun runPhase2SelfMatchTest(profile: GestureProfile) {
+        val tag = "M4ForensicSelfMatch"
+        Log.i(tag, "╔══════════════════════════════════════════════════════════╗")
+        Log.i(tag, "║ PHASE 2: SELF-MATCH & PERSISTENCE TEST for '${profile.label}' ║")
+        Log.i(tag, "╚══════════════════════════════════════════════════════════╝")
+
+        val protos = profile.prototypes
+        if (protos.isEmpty()) {
+            Log.e(tag, "No prototypes in profile!")
+            return
+        }
+
+        // 1. DTW(Pi, Pi) self matches (MUST BE 0.0000)
+        for ((idx, p) in protos.withIndex()) {
+            val selfDtw = DTW.computeDistance(p.sequence, p.sequence)
+            Log.i(tag, "  SELF-MATCH DTW(P${idx + 1}, P${idx + 1}): dist=${String.format("%.6f", selfDtw.normalizedDistance)} (accCost=${String.format("%.4f", selfDtw.accumulatedCost)}) [Expected: 0.0000]")
+        }
+
+        // 2. Intra-prototype distances
+        for (i in protos.indices) {
+            for (j in i + 1 until protos.size) {
+                val pairDtw = DTW.computeDistance(protos[i].sequence, protos[j].sequence)
+                Log.i(tag, "  INTRA-PAIR DTW(P${i + 1}, P${j + 1}): dist=${String.format("%.4f", pairDtw.normalizedDistance)} (accCost=${String.format("%.2f", pairDtw.accumulatedCost)})")
+            }
+        }
+
+        // 3. Persistence round-trip verification
+        val reloadedProfiles = GestureProfileStorage.loadProfiles(this)
+        val reloadedProfile = reloadedProfiles.find { it.id == profile.id }
+
+        if (reloadedProfile != null && reloadedProfile.prototypes.size == protos.size) {
+            for (i in protos.indices) {
+                val orig = protos[i].sequence
+                val restored = reloadedProfile.prototypes[i].sequence
+                val roundTripDtw = DTW.computeDistance(orig, restored)
+                val restoredSelfDtw = DTW.computeDistance(restored, restored)
+                Log.i(tag, "  PERSISTENCE ROUND-TRIP DTW(Orig_P${i + 1}, Restored_P${i + 1}): dist=${String.format("%.6f", roundTripDtw.normalizedDistance)} [Expected: 0.0000]")
+                Log.i(tag, "  RESTORED SELF-MATCH DTW(Restored_P${i + 1}, Restored_P${i + 1}): dist=${String.format("%.6f", restoredSelfDtw.normalizedDistance)} [Expected: 0.0000]")
+            }
+        } else {
+            Log.e(tag, "FAILED TO RELOAD PROFILE FROM DISK FOR PERSISTENCE TEST!")
+        }
+        Log.i(tag, "══════════════════════════════════════════════════════════")
+    }
+
+    /**
+     * Phases 3, 4, 7, 9: Live Recognition Diagnostics.
+     */
+    private fun runLiveRecognitionDiagnostics(liveSeq: TemporalSequence, result: RecognitionResult) {
+        val liveStats = liveSeq.computeStatistics()
+
+        // --- Phase 3 & 7 & 9: Full Comparison Matrix ---
+        val profiles = personalGestureStore.getAllProfiles()
+        for (profile in profiles) {
+            Log.i("M4ForensicLiveRepeat", "──────────────────────────────────────────────")
+            Log.i("M4ForensicLiveRepeat", "LIVE vs PROFILE '${profile.label}' MATRIX:")
+
+            for ((pIdx, proto) in profile.prototypes.withIndex()) {
+                val dtwRes = DTW.computeDistance(liveSeq, proto.sequence)
+                val resampledEuclid = liveSeq.computeResampledEuclideanDistance(proto.sequence, 20)
+                val pearsonCorr = liveSeq.computeTrajectoryPearsonCorrelation(proto.sequence, 20)
+                val protoStats = proto.sequence.computeStatistics()
+
+                // Phase 7: Handedness check
+                val handMatch = if (liveStats.dominantHandedness.equals(protoStats.dominantHandedness, ignoreCase = true)) "MATCH" else "MISMATCH!"
+
+                Log.i("M4ForensicLiveRepeat", "  P${pIdx + 1} [${proto.id}]: " +
+                        "DTW_dist=${String.format("%.4f", dtwRes.normalizedDistance)} | " +
+                        "ResampledEuclid=${String.format("%.4f", resampledEuclid)} | " +
+                        "PearsonCorr=${String.format("%.4f", pearsonCorr)} | " +
+                        "Handedness: Live=${liveStats.dominantHandedness} vs Proto=${protoStats.dominantHandedness} ($handMatch) | " +
+                        "LiveLen=${liveSeq.frameCount}p vs ProtoLen=${proto.sequence.frameCount}p")
+            }
+        }
+
+        // --- Phase 4: Segmentation Asymmetry Table ---
+        if (teachHistory.isNotEmpty()) {
+            Log.i("M4ForensicAsymmetry", "╔══════════════════════════════════════════════════════════════════════════════════════════╗")
+            Log.i("M4ForensicAsymmetry", "║ PHASE 4: SEGMENTATION ASYMMETRY TABLE                                                    ║")
+            Log.i("M4ForensicAsymmetry", "╠══════════════════════════════════════════════════════════════════════════════════════════╣")
+            Log.i("M4ForensicAsymmetry", "║ Seq | Source      | Frames | Dur(ms) | MeanVel | MaxVel | MotionVar | Checksum           ║")
+            Log.i("M4ForensicAsymmetry", "╠══════════════════════════════════════════════════════════════════════════════════════════╣")
+
+            for ((i, tSeq) in teachHistory.withIndex()) {
+                val st = tSeq.computeStatistics()
+                val vs = st.velocityStats
+                Log.i("M4ForensicAsymmetry", String.format("║ P%-2d | Teach       | %-6d | %-7d | %-7.4f | %-6.4f | %-9.4f | %-18.4f ║",
+                    i + 1, tSeq.frameCount, tSeq.durationMs, vs.meanVelocity, vs.maxVelocity, st.motionVariance, st.totalChecksum))
+            }
+            for ((i, lSeq) in liveHistory.withIndex()) {
+                val st = lSeq.computeStatistics()
+                val vs = st.velocityStats
+                Log.i("M4ForensicAsymmetry", String.format("║ L%-2d | Recognition | %-6d | %-7d | %-7.4f | %-6.4f | %-9.4f | %-18.4f ║",
+                    i + 1, lSeq.frameCount, lSeq.durationMs, vs.meanVelocity, vs.maxVelocity, st.motionVariance, st.totalChecksum))
+            }
+            Log.i("M4ForensicAsymmetry", "╚══════════════════════════════════════════════════════════════════════════════════════════╝")
+        }
+    }
+
+    /**
      * Updates HUD UI elements reflecting the event-driven recognition lifecycle.
      */
-    private fun updateRecognitionDisplay(hasHands: Boolean = true) {
+    private fun updateRecognitionDisplay() {
         if (enrollmentController.isTeaching) {
             binding.tvRecognitionStatus.text = "TEACH MODE"
             binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FF00E5FF"))
@@ -469,9 +652,29 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         }
 
         when (displayState) {
+            DisplayLifecycleState.NO_HAND -> {
+                binding.tvRecognitionStatus.text = "NO HAND FOUND"
+                binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FFFF5252"))
+                binding.tvRecognizedLabel.text = "--"
+                binding.tvRecognizedLabel.setTextColor(Color.parseColor("#80FFFFFF"))
+                binding.tvBestSecondDist.text = "-- / --"
+                binding.tvMarginThreshold.text = "-- / ${GestureConfig.DEFAULT_RECOGNITION_THRESHOLD}"
+                binding.tvSeqIdDuration.text = "No hand detected"
+            }
+
+            DisplayLifecycleState.HAND_DETECTED -> {
+                binding.tvRecognitionStatus.text = "HAND DETECTED"
+                binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FF00E5FF"))
+                binding.tvRecognizedLabel.text = "Stabilizing..."
+                binding.tvRecognizedLabel.setTextColor(Color.parseColor("#FF00E5FF"))
+                binding.tvBestSecondDist.text = "-- / --"
+                binding.tvMarginThreshold.text = "-- / ${GestureConfig.DEFAULT_RECOGNITION_THRESHOLD}"
+                binding.tvSeqIdDuration.text = "Hand entry stabilization"
+            }
+
             DisplayLifecycleState.SEARCHING -> {
-                binding.tvRecognitionStatus.text = if (hasHands) "IDLE" else "SEARCHING"
-                binding.tvRecognitionStatus.setTextColor(if (hasHands) Color.parseColor("#FF00E676") else Color.parseColor("#FFFF9100"))
+                binding.tvRecognitionStatus.text = "SEARCHING"
+                binding.tvRecognitionStatus.setTextColor(Color.parseColor("#FF00E676"))
                 binding.tvRecognizedLabel.text = "--"
                 binding.tvRecognizedLabel.setTextColor(Color.parseColor("#80FFFFFF"))
                 binding.tvBestSecondDist.text = "-- / --"

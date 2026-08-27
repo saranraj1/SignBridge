@@ -259,24 +259,46 @@
         </LinearLayout>
     </androidx.cardview.widget.CardView>
 
-    <!-- Bottom Action Button: Start Teach Mode (When IDLE) -->
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnStartTeachMode"
-        android:layout_width="wrap_content"
+    <!-- Bottom Action Buttons Container (When in Recognition/Idle mode) -->
+    <LinearLayout
+        android:id="@+id/bottomButtonContainer"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="24dp"
-        android:backgroundTint="@color/brand_cyan"
-        android:paddingHorizontal="24dp"
-        android:paddingVertical="12dp"
-        android:text="+ TEACH NEW GESTURE"
-        android:textColor="@color/black"
-        android:textSize="14sp"
-        android:textStyle="bold"
-        app:cornerRadius="24dp"
-        app:elevation="6dp"
+        android:layout_marginBottom="20dp"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnManualRecord"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:backgroundTint="#FF6200EE"
+            android:paddingVertical="10dp"
+            android:text="● MANUAL RECORD [BYPASS SEGMENTER]"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            app:cornerRadius="20dp"
+            app:elevation="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnStartTeachMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="@color/brand_cyan"
+            android:paddingVertical="12dp"
+            android:text="+ TEACH NEW GESTURE"
+            android:textColor="@color/black"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            app:cornerRadius="20dp"
+            app:elevation="6dp" />
+    </LinearLayout>
 
     <!-- Teach Mode Interactive Card (Visible when in Teach Mode) -->
     <androidx.cardview.widget.CardView

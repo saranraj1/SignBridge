@@ -18,6 +18,25 @@ enum class SequenceStatus {
 }
 
 /**
+ * Deep statistical summary of frame-to-frame velocity metrics.
+ */
+data class VelocityStatistics(
+    val minVelocity: Float,
+    val maxVelocity: Float,
+    val meanVelocity: Float,
+    val medianVelocity: Float,
+    val velocityVariance: Float
+) {
+    fun formatSummary(): String {
+        return "min=${String.format("%.4f", minVelocity)}, " +
+                "max=${String.format("%.4f", maxVelocity)}, " +
+                "mean=${String.format("%.4f", meanVelocity)}, " +
+                "med=${String.format("%.4f", medianVelocity)}, " +
+                "var=${String.format("%.6f", velocityVariance)}"
+    }
+}
+
+/**
  * Comprehensive descriptive statistics of a [TemporalSequence].
  */
 data class SequenceStatistics(
@@ -34,14 +53,22 @@ data class SequenceStatistics(
     val minZ: Float,
     val maxZ: Float,
     val allValidLandmarks: Boolean,
-    val motionVariance: Float
+    val motionVariance: Float,
+    val totalChecksum: Double,
+    val firstFrameChecksum: Double,
+    val lastFrameChecksum: Double,
+    val velocityStats: VelocityStatistics
 ) {
     fun formatSummary(): String {
         return "frames=$frameCount, dur=${durationMs}ms, hand=$dominantHandedness, scale=${String.format("%.3f", averageHandScale)}, " +
                 "x=[${String.format("%.2f", minX)}..${String.format("%.2f", maxX)}], " +
                 "y=[${String.format("%.2f", minY)}..${String.format("%.2f", maxY)}], " +
                 "z=[${String.format("%.2f", minZ)}..${String.format("%.2f", maxZ)}], " +
-                "motionVar=${String.format("%.4f", motionVariance)}, valid=$allValidLandmarks"
+                "motionVar=${String.format("%.4f", motionVariance)}, " +
+                "checksum=${String.format("%.4f", totalChecksum)}, " +
+                "f0Check=${String.format("%.4f", firstFrameChecksum)}, " +
+                "fNCheck=${String.format("%.4f", lastFrameChecksum)}, " +
+                "vel=[${velocityStats.formatSummary()}]"
     }
 }
 
@@ -76,6 +103,66 @@ data class TemporalSequence(
         get() = if (frames.isNotEmpty()) frames.last().timestampMs else 0L
 
     /**
+     * Computes the coordinate checksum across all landmarks in a single frame.
+     */
+    fun computeFrameChecksum(frameIndex: Int): Double {
+        if (frameIndex !in frames.indices) return 0.0
+        var sum = 0.0
+        for (p in frames[frameIndex].landmarks) {
+            sum += p.x.toDouble() + p.y.toDouble() + p.z.toDouble()
+        }
+        return sum
+    }
+
+    /**
+     * Computes the global coordinate checksum across all frames and landmarks.
+     */
+    fun computeTotalChecksum(): Double {
+        var sum = 0.0
+        for (f in frames) {
+            for (p in f.landmarks) {
+                sum += p.x.toDouble() + p.y.toDouble() + p.z.toDouble()
+            }
+        }
+        return sum
+    }
+
+    /**
+     * Computes statistical velocity metrics (min, max, mean, median, variance).
+     */
+    fun computeVelocityStatistics(): VelocityStatistics {
+        val velocities = computeFrameVelocities()
+        if (velocities.isEmpty()) {
+            return VelocityStatistics(0f, 0f, 0f, 0f, 0f)
+        }
+
+        val sorted = velocities.sorted()
+        val minV = sorted.first()
+        val maxV = sorted.last()
+        val meanV = sorted.average().toFloat()
+        val medianV = if (sorted.size % 2 == 1) {
+            sorted[sorted.size / 2]
+        } else {
+            (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2f
+        }
+
+        var varianceSum = 0.0
+        for (v in velocities) {
+            val diff = (v - meanV).toDouble()
+            varianceSum += diff * diff
+        }
+        val varianceV = (varianceSum / velocities.size).toFloat()
+
+        return VelocityStatistics(
+            minVelocity = minV,
+            maxVelocity = maxV,
+            meanVelocity = meanV,
+            medianVelocity = medianV,
+            velocityVariance = varianceV
+        )
+    }
+
+    /**
      * Computes deep descriptive statistics across all frames and landmarks in the sequence.
      */
     fun computeStatistics(): SequenceStatistics {
@@ -94,7 +181,11 @@ data class TemporalSequence(
                 minZ = 0f,
                 maxZ = 0f,
                 allValidLandmarks = false,
-                motionVariance = 0f
+                motionVariance = 0f,
+                totalChecksum = 0.0,
+                firstFrameChecksum = 0.0,
+                lastFrameChecksum = 0.0,
+                velocityStats = VelocityStatistics(0f, 0f, 0f, 0f, 0f)
             )
         }
 
@@ -163,7 +254,11 @@ data class TemporalSequence(
             minZ = if (minZ.isInfinite()) 0f else minZ,
             maxZ = if (maxZ.isInfinite()) 0f else maxZ,
             allValidLandmarks = allValid,
-            motionVariance = motionVar
+            motionVariance = motionVar,
+            totalChecksum = computeTotalChecksum(),
+            firstFrameChecksum = computeFrameChecksum(0),
+            lastFrameChecksum = computeFrameChecksum(frames.size - 1),
+            velocityStats = computeVelocityStatistics()
         )
     }
 
@@ -181,8 +276,6 @@ data class TemporalSequence(
 
     /**
      * Generates a character-level motion profile string for the sequence (e.g. "SSSSMMMMMSSSS").
-     * 'S' = Stationary (velocity < movingThreshold)
-     * 'M' = Moving (velocity >= movingThreshold)
      */
     fun formatMotionProfile(movingThreshold: Float = 0.035f): String {
         val velocities = computeFrameVelocities()
@@ -193,6 +286,94 @@ data class TemporalSequence(
             sb.append(if (v >= movingThreshold) 'M' else 'S')
         }
         return sb.toString()
+    }
+
+    /**
+     * Resamples this sequence linearly to a fixed number of frames (63-D vectors).
+     */
+    fun resampleLinearly(targetLength: Int): List<FloatArray> {
+        if (frames.isEmpty() || targetLength <= 0) return emptyList()
+        if (frames.size == 1) {
+            val singleVec = frames[0].toFeatureVector()
+            return List(targetLength) { singleVec.clone() }
+        }
+
+        val vectors = frames.map { it.toFeatureVector() }
+        val result = ArrayList<FloatArray>(targetLength)
+        val origLen = vectors.size
+
+        for (i in 0 until targetLength) {
+            val progress = i.toDouble() / (targetLength - 1).toDouble()
+            val origIndexExact = progress * (origLen - 1)
+            val idxLow = origIndexExact.toInt().coerceIn(0, origLen - 1)
+            val idxHigh = (idxLow + 1).coerceAtMost(origLen - 1)
+            val frac = (origIndexExact - idxLow).toFloat()
+
+            val vecLow = vectors[idxLow]
+            val vecHigh = vectors[idxHigh]
+            val interpolated = FloatArray(63)
+            for (d in 0 until 63) {
+                interpolated[d] = vecLow[d] + frac * (vecHigh[d] - vecLow[d])
+            }
+            result.add(interpolated)
+        }
+
+        return result
+    }
+
+    /**
+     * Phase 9: Computes frame-to-frame Euclidean distance after linear temporal resampling.
+     */
+    fun computeResampledEuclideanDistance(other: TemporalSequence, targetLength: Int = 20): Double {
+        if (this.frames.isEmpty() || other.frames.isEmpty()) return Double.POSITIVE_INFINITY
+        val resampledA = this.resampleLinearly(targetLength)
+        val resampledB = other.resampleLinearly(targetLength)
+
+        var totalDist = 0.0
+        for (i in 0 until targetLength) {
+            totalDist += DTW.frameDistance(resampledA[i], resampledB[i])
+        }
+        return totalDist / targetLength.toDouble()
+    }
+
+    /**
+     * Phase 9: Computes the mean Pearson correlation coefficient between landmark coordinate trajectories.
+     */
+    fun computeTrajectoryPearsonCorrelation(other: TemporalSequence, targetLength: Int = 20): Double {
+        if (this.frames.isEmpty() || other.frames.isEmpty()) return 0.0
+        val resampledA = this.resampleLinearly(targetLength)
+        val resampledB = other.resampleLinearly(targetLength)
+
+        var sumCorr = 0.0
+        var validDims = 0
+
+        for (d in 0 until 63) {
+            val valsA = DoubleArray(targetLength) { i -> resampledA[i][d].toDouble() }
+            val valsB = DoubleArray(targetLength) { i -> resampledB[i][d].toDouble() }
+
+            val meanA = valsA.average()
+            val meanB = valsB.average()
+
+            var num = 0.0
+            var denA = 0.0
+            var denB = 0.0
+
+            for (i in 0 until targetLength) {
+                val diffA = valsA[i] - meanA
+                val diffB = valsB[i] - meanB
+                num += diffA * diffB
+                denA += diffA * diffA
+                denB += diffB * diffB
+            }
+
+            val denom = sqrt(denA * denB)
+            if (denom > 1e-6) {
+                sumCorr += num / denom
+                validDims++
+            }
+        }
+
+        return if (validDims > 0) sumCorr / validDims else 0.0
     }
 
     companion object {
