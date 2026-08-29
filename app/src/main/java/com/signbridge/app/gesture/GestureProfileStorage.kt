@@ -5,275 +5,117 @@ import android.util.Log
 import com.signbridge.app.preprocessing.NormalizedLandmarkFrame
 import com.signbridge.app.preprocessing.NormalizedLandmarkPoint
 import com.signbridge.app.vision.LandmarkPoint
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
-/**
- * Pure Kotlin local persistence manager for [GestureProfile] instances.
- *
- * Saves enrolled gesture profiles to internal disk storage.
- * Operates 100% locally and offline without cloud dependencies, database overhead, or platform JSON stubs.
- */
+/** Versioned, atomic local-only JSON persistence for personalized gesture profiles. */
 object GestureProfileStorage {
-
     private const val TAG = "GestureProfileStorage"
-    private const val PROFILES_FILE_NAME = "enrolled_gesture_profiles.json"
+    private const val FILE = "enrolled_gesture_profiles.json"
+    private const val VERSION = 2
 
-    /**
-     * Serializes a list of [GestureProfile] into a structured JSON string.
-     */
     fun serializeProfiles(profiles: List<GestureProfile>): String {
-        val sb = StringBuilder()
-        sb.append("[\n")
-        profiles.forEachIndexed { pIdx, profile ->
-            sb.append("  {\n")
-            sb.append("    \"id\": \"${escapeJson(profile.id)}\",\n")
-            sb.append("    \"label\": \"${escapeJson(profile.label)}\",\n")
-            sb.append("    \"createdAtMs\": ${profile.createdAtMs},\n")
-            sb.append("    \"prototypes\": [\n")
-            profile.prototypes.forEachIndexed { prIdx, proto ->
-                sb.append("      {\n")
-                sb.append("        \"id\": \"${escapeJson(proto.id)}\",\n")
-                sb.append("        \"displayName\": \"${escapeJson(proto.displayName)}\",\n")
-                sb.append("        \"createdAtMs\": ${proto.createdAtMs},\n")
-                sb.append("        \"windowSize\": ${proto.sequence.windowSize},\n")
-                sb.append("        \"frames\": [\n")
-                proto.sequence.frames.forEachIndexed { fIdx, frame ->
-                    sb.append("          {\n")
-                    sb.append("            \"ts\": ${frame.timestampMs},\n")
-                    sb.append("            \"hand\": \"${escapeJson(frame.handedness)}\",\n")
-                    sb.append("            \"scale\": ${frame.handScale},\n")
-                    sb.append("            \"wrist\": [${frame.rawWristPosition.x}, ${frame.rawWristPosition.y}, ${frame.rawWristPosition.z}],\n")
-                    sb.append("            \"landmarks\": [")
-                    frame.landmarks.forEachIndexed { lIdx, pt ->
-                        sb.append("${pt.x},${pt.y},${pt.z}")
-                        if (lIdx < frame.landmarks.size - 1) sb.append(",")
-                    }
-                    sb.append("]\n")
-                    sb.append("          }")
-                    if (fIdx < proto.sequence.frames.size - 1) sb.append(",")
-                    sb.append("\n")
+        val root = JSONObject().put("version", VERSION).put("profiles", JSONArray())
+        val arr = root.getJSONArray("profiles")
+        profiles.forEach { p ->
+            val po = JSONObject().put("id", p.id).put("label", p.label).put("createdAtMs", p.createdAtMs).put("prototypes", JSONArray())
+            val pa = po.getJSONArray("prototypes")
+            p.prototypes.forEach { proto ->
+                val pr = JSONObject().put("id", proto.id).put("displayName", proto.displayName).put("createdAtMs", proto.createdAtMs).put("windowSize", proto.sequence.windowSize).put("sequenceId", proto.sequence.sequenceId).put("frames", JSONArray())
+                val fa = pr.getJSONArray("frames")
+                proto.sequence.frames.forEach { f ->
+                    val fo = JSONObject().put("ts", f.timestampMs).put("hand", f.handedness).put("scale", f.handScale).put("wrist", JSONArray().put(f.rawWristPosition.x).put(f.rawWristPosition.y).put(f.rawWristPosition.z)).put("landmarks", JSONArray())
+                    val la = fo.getJSONArray("landmarks")
+                    f.landmarks.forEach { pt -> la.put(pt.x).put(pt.y).put(pt.z) }
+                    fa.put(fo)
                 }
-                sb.append("        ]\n")
-                sb.append("      }")
-                if (prIdx < profile.prototypes.size - 1) sb.append(",")
-                sb.append("\n")
+                pa.put(pr)
             }
-            sb.append("    ]\n")
-            sb.append("  }")
-            if (pIdx < profiles.size - 1) sb.append(",")
-            sb.append("\n")
+            arr.put(po)
         }
-        sb.append("]")
-        return sb.toString()
+        return root.toString(2)
     }
 
-    /**
-     * Deserializes a JSON string into a list of [GestureProfile] instances.
-     */
     fun deserializeProfiles(json: String): List<GestureProfile> {
         val trimmed = json.trim()
-        if (trimmed.isEmpty() || trimmed == "[]") return emptyList()
+        val arr: JSONArray = if (trimmed.startsWith("[")) {
+            try { JSONArray(trimmed) } catch (e: Exception) { Log.e(TAG, "Invalid profile JSONArray", e); return emptyList() }
+        } else {
+            val root = try { JSONObject(trimmed) } catch (e: Exception) { Log.e(TAG, "Invalid profile JSONObject", e); return emptyList() }
+            root.optJSONArray("profiles") ?: return emptyList()
+        }
 
-        val profiles = mutableListOf<GestureProfile>()
-        try {
-            // Tokenize by profile blocks
-            val profileBlocks = extractBlocks(trimmed, '[', ']')
-            for (pBlock in profileBlocks) {
-                val pId = extractString(pBlock, "id") ?: continue
-                val pLabel = extractString(pBlock, "label") ?: pId
-                val pCreatedAt = extractLong(pBlock, "createdAtMs") ?: System.currentTimeMillis()
+        val out = mutableListOf<GestureProfile>()
+        for (i in 0 until arr.length()) {
+            val po = arr.optJSONObject(i) ?: continue
+            val id = po.optString("id", "")
+            val label = po.optString("label", "")
+            if (id.isBlank() || label.isBlank()) continue
 
-                val protoSectionStart = pBlock.indexOf("\"prototypes\":")
-                if (protoSectionStart == -1) continue
-
-                val protosSub = pBlock.substring(protoSectionStart)
-                val protoBlocks = extractBlocks(protosSub, '[', ']')
-
-                val prototypes = mutableListOf<GesturePrototype>()
-                for (prBlock in protoBlocks) {
-                    val prId = extractString(prBlock, "id") ?: continue
-                    val prName = extractString(prBlock, "displayName") ?: pLabel
-                    val prCreatedAt = extractLong(prBlock, "createdAtMs") ?: pCreatedAt
-                    val windowSize = extractInt(prBlock, "windowSize") ?: 30
-
-                    val framesSectionStart = prBlock.indexOf("\"frames\":")
-                    if (framesSectionStart == -1) continue
-
-                    val framesSub = prBlock.substring(framesSectionStart)
-                    val frameBlocks = extractBlocks(framesSub, '[', ']')
-
-                    val frames = mutableListOf<NormalizedLandmarkFrame>()
-                    for (fBlock in frameBlocks) {
-                        val ts = extractLong(fBlock, "ts") ?: 0L
-                        val hand = extractString(fBlock, "hand") ?: "Right"
-                        val scale = extractFloat(fBlock, "scale") ?: 1.0f
-
-                        val wristValues = extractFloatList(fBlock, "wrist")
-                        val wrist = if (wristValues.size >= 3) {
-                            LandmarkPoint(wristValues[0], wristValues[1], wristValues[2])
-                        } else {
-                            LandmarkPoint(0.5f, 0.5f, 0.0f)
-                        }
-
-                        val landmarkFloats = extractFloatList(fBlock, "landmarks")
-                        val landmarks = mutableListOf<NormalizedLandmarkPoint>()
-                        for (idx in landmarkFloats.indices step 3) {
-                            if (idx + 2 < landmarkFloats.size) {
-                                landmarks.add(
-                                    NormalizedLandmarkPoint(
-                                        landmarkFloats[idx],
-                                        landmarkFloats[idx + 1],
-                                        landmarkFloats[idx + 2]
-                                    )
-                                )
-                            }
-                        }
-
-                        if (landmarks.size == 21) {
-                            frames.add(
-                                NormalizedLandmarkFrame(
-                                    timestampMs = ts,
-                                    handedness = hand,
-                                    landmarks = landmarks,
-                                    handScale = scale,
-                                    rawWristPosition = wrist
-                                )
-                            )
-                        }
+            val pa = po.optJSONArray("prototypes") ?: continue
+            val protos = mutableListOf<GesturePrototype>()
+            for (j in 0 until pa.length()) {
+                val pr = pa.optJSONObject(j) ?: continue
+                val fa = pr.optJSONArray("frames") ?: continue
+                val frames = mutableListOf<NormalizedLandmarkFrame>()
+                for (k in 0 until fa.length()) {
+                    val fo = fa.optJSONObject(k) ?: continue
+                    val la = fo.optJSONArray("landmarks") ?: continue
+                    if (la.length() != 63) continue
+                    val pts = mutableListOf<NormalizedLandmarkPoint>()
+                    for (n in 0 until 63 step 3) {
+                        pts.add(NormalizedLandmarkPoint(la.optDouble(n, 0.0).toFloat(), la.optDouble(n + 1, 0.0).toFloat(), la.optDouble(n + 2, 0.0).toFloat()))
                     }
-
-                    if (frames.isNotEmpty()) {
-                        prototypes.add(
-                            GesturePrototype(
-                                id = prId,
-                                displayName = prName,
-                                sequence = TemporalSequence(frames, windowSize, isReady = frames.size == windowSize),
-                                createdAtMs = prCreatedAt
-                            )
-                        )
+                    val w = fo.optJSONArray("wrist")
+                    val wrist = if (w != null && w.length() >= 3) {
+                        LandmarkPoint(w.optDouble(0, 0.5).toFloat(), w.optDouble(1, 0.5).toFloat(), w.optDouble(2, 0.0).toFloat())
+                    } else {
+                        LandmarkPoint(0.5f, 0.5f, 0f)
                     }
+                    frames.add(NormalizedLandmarkFrame(fo.optLong("ts", 0L), fo.optString("hand", "Unknown"), pts, fo.optDouble("scale", 1.0).toFloat(), wrist))
                 }
-
-                if (prototypes.isNotEmpty()) {
-                    profiles.add(
-                        GestureProfile(
-                            id = pId,
-                            label = pLabel,
-                            prototypes = prototypes,
-                            createdAtMs = pCreatedAt
-                        )
-                    )
+                if (frames.isNotEmpty()) {
+                    protos.add(GesturePrototype(pr.optString("id", "${id}_shot_$j"), pr.optString("displayName", label), TemporalSequence(frames, pr.optInt("windowSize", frames.size), true, pr.optLong("sequenceId", 0L)), pr.optLong("createdAtMs", System.currentTimeMillis())))
                 }
             }
-        } catch (e: Exception) {
-            println("Error parsing gesture profiles JSON: ${e.message}")
+            if (protos.isNotEmpty()) {
+                out.add(GestureProfile(id, label, protos, po.optLong("createdAtMs", System.currentTimeMillis())))
+            }
         }
-        return profiles
+        return out
     }
 
-    /**
-     * Persists all enrolled gesture profiles to internal disk storage.
-     */
-    fun saveProfiles(context: Context, profiles: List<GestureProfile>): Boolean {
-        return try {
-            val json = serializeProfiles(profiles)
-            val file = File(context.filesDir, PROFILES_FILE_NAME)
-            file.writeText(json)
-            Log.i(TAG, "Saved ${profiles.size} profiles to local storage (${file.length()} bytes)")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed saving profiles: ${e.message}", e)
-            false
+    fun saveProfiles(context: Context, profiles: List<GestureProfile>): Boolean = try {
+        val target = File(context.filesDir, FILE)
+        val temp = File(context.filesDir, "$FILE.tmp")
+        temp.writeText(serializeProfiles(profiles))
+        if (!temp.renameTo(target)) {
+            target.writeText(temp.readText())
+            temp.delete()
         }
+        Log.i(TAG, "Saved ${profiles.size} profiles (${target.length()} bytes)")
+        true
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed saving profiles", e)
+        false
     }
 
-    /**
-     * Loads all persisted gesture profiles from internal disk storage.
-     */
     fun loadProfiles(context: Context): List<GestureProfile> {
-        val file = File(context.filesDir, PROFILES_FILE_NAME)
-        if (!file.exists()) return emptyList()
-
+        val f = File(context.filesDir, FILE)
+        if (!f.exists()) return emptyList()
         return try {
-            val json = file.readText()
-            val loaded = deserializeProfiles(json)
-            Log.i(TAG, "Loaded ${loaded.size} profiles from local storage")
-            loaded
+            deserializeProfiles(f.readText()).also { Log.i(TAG, "Loaded ${it.size} profiles") }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed loading profiles: ${e.message}", e)
+            Log.e(TAG, "Failed loading profiles", e)
             emptyList()
         }
     }
 
-    /**
-     * Clears persisted gesture profiles from disk.
-     */
-    fun clearProfiles(context: Context): Boolean {
-        val file = File(context.filesDir, PROFILES_FILE_NAME)
-        return if (file.exists()) file.delete() else true
-    }
-
-    // --- JSON Parsing Helpers ---
-
-    private fun escapeJson(str: String): String {
-        return str.replace("\\", "\\\\").replace("\"", "\\\"")
-    }
-
-    private fun extractString(json: String, key: String): String? {
-        val pattern = "\"$key\"\\s*:\\s*\"([^\"]*)\"".toRegex()
-        return pattern.find(json)?.groupValues?.get(1)
-    }
-
-    private fun extractLong(json: String, key: String): Long? {
-        val pattern = "\"$key\"\\s*:\\s*([0-9]+)".toRegex()
-        return pattern.find(json)?.groupValues?.get(1)?.toLongOrNull()
-    }
-
-    private fun extractInt(json: String, key: String): Int? {
-        val pattern = "\"$key\"\\s*:\\s*([0-9]+)".toRegex()
-        return pattern.find(json)?.groupValues?.get(1)?.toIntOrNull()
-    }
-
-    private fun extractFloat(json: String, key: String): Float? {
-        val pattern = "\"$key\"\\s*:\\s*([-0-9.]+)".toRegex()
-        return pattern.find(json)?.groupValues?.get(1)?.toFloatOrNull()
-    }
-
-    private fun extractFloatList(json: String, key: String): List<Float> {
-        val pattern = "\"$key\"\\s*:\\s*\\[([^\\]]*)\\]".toRegex()
-        val match = pattern.find(json) ?: return emptyList()
-        val content = match.groupValues[1]
-        if (content.isBlank()) return emptyList()
-        return content.split(",").mapNotNull { it.trim().toFloatOrNull() }
-    }
-
-    private fun extractBlocks(json: String, openBracket: Char, closeBracket: Char): List<String> {
-        val blocks = mutableListOf<String>()
-        val startIdx = json.indexOf(openBracket)
-        if (startIdx == -1) return emptyList()
-
-        var depth = 0
-        var blockStart = -1
-
-        for (i in startIdx until json.length) {
-            val c = json[i]
-            if (c == '{') {
-                if (depth == 1 && blockStart == -1) {
-                    blockStart = i
-                }
-                depth++
-            } else if (c == '}') {
-                depth--
-                if (depth == 1 && blockStart != -1) {
-                    blocks.add(json.substring(blockStart, i + 1))
-                    blockStart = -1
-                }
-            } else if (c == openBracket) {
-                if (depth == 0) depth = 1
-            } else if (c == closeBracket && depth <= 1) {
-                break
-            }
-        }
-        return blocks
+    fun clearProfiles(context: Context): Boolean = try {
+        File(context.filesDir, FILE).delete()
+        true
+    } catch (_: Exception) {
+        false
     }
 }

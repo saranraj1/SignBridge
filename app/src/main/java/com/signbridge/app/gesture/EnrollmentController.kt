@@ -5,13 +5,14 @@ package com.signbridge.app.gesture
  */
 class EnrollmentController {
 
+    @Volatile
     var state: EnrollmentState = EnrollmentState.IDLE
         private set
 
     private val capturedSequences = mutableListOf<TemporalSequence>()
 
     val capturedCount: Int
-        get() = capturedSequences.size
+        get() = synchronized(capturedSequences) { capturedSequences.size }
 
     val targetCount: Int = 3
 
@@ -21,6 +22,7 @@ class EnrollmentController {
     /**
      * Initiates the Teach Mode workflow from IDLE state.
      */
+    @Synchronized
     fun startTeaching() {
         capturedSequences.clear()
         state = EnrollmentState.TEACH_INTRO
@@ -29,6 +31,7 @@ class EnrollmentController {
     /**
      * Begins capturing the next demonstration sample.
      */
+    @Synchronized
     fun startRecordingCurrentSample() {
         state = when (state) {
             EnrollmentState.TEACH_INTRO -> EnrollmentState.RECORDING_1
@@ -44,6 +47,7 @@ class EnrollmentController {
      * @param sequence Isolated, variable-length normalized gesture sequence
      * @return True if a sample was successfully validated and stored
      */
+    @Synchronized
     fun registerSegmentedSample(sequence: TemporalSequence): Boolean {
         if (sequence.frameCount < GestureConfig.MIN_GESTURE_DURATION_FRAMES) {
             return false
@@ -83,6 +87,7 @@ class EnrollmentController {
     /**
      * Evaluates an incoming temporal buffer snapshot during an active recording state (fallback/legacy).
      */
+    @Synchronized
     fun processFrame(hasHands: Boolean, bufferSnapshot: TemporalSequence): Boolean {
         if (!hasHands || !bufferSnapshot.isReady || bufferSnapshot.frameCount < 5) {
             return false
@@ -93,6 +98,7 @@ class EnrollmentController {
     /**
      * Manually registers a captured sequence (primarily for unit tests and simulation).
      */
+    @Synchronized
     fun recordSampleDirectly(sequence: TemporalSequence): Boolean {
         if (capturedSequences.size >= targetCount) return false
         capturedSequences.add(sequence)
@@ -113,6 +119,7 @@ class EnrollmentController {
      * @param matcher Live [PrototypeMatcher] used for DTW recognition
      * @return [Result] containing the created [GestureProfile] or an exception on failure
      */
+    @Synchronized
     fun saveGesture(
         label: String,
         store: PersonalGestureStore,
@@ -155,6 +162,7 @@ class EnrollmentController {
     /**
      * Aborts Teach Mode, discards all collected samples, and resets to IDLE.
      */
+    @Synchronized
     fun cancel() {
         capturedSequences.clear()
         state = EnrollmentState.IDLE
@@ -163,6 +171,7 @@ class EnrollmentController {
     /**
      * Returns an immutable copy of currently captured sequences.
      */
+    @Synchronized
     fun getCapturedSequences(): List<TemporalSequence> {
         return ArrayList(capturedSequences)
     }

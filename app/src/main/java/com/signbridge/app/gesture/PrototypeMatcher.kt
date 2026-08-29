@@ -1,142 +1,70 @@
 package com.signbridge.app.gesture
 
-import java.util.Collections
-
 /**
- * 1-Nearest-Neighbor (1-NN) Prototype Matcher using Dynamic Time Warping (DTW)
- * with calibrated distance thresholding and ambiguity margin gating.
+ * 1-Nearest Neighbor prototype matcher with class-level ambiguity resolution.
  */
 class PrototypeMatcher {
+    private val prototypes = mutableListOf<GesturePrototype>()
 
-    private val prototypeList = Collections.synchronizedList(mutableListOf<GesturePrototype>())
-
-    val prototypeCount: Int
-        get() = prototypeList.size
-
-    /**
-     * Registers a new gesture prototype in memory.
-     */
-    fun addPrototype(prototype: GesturePrototype) {
-        synchronized(prototypeList) {
-            prototypeList.removeAll { it.id == prototype.id }
-            prototypeList.add(prototype)
-        }
+    @Synchronized
+    fun addPrototype(p: GesturePrototype) {
+        prototypes.removeAll { it.id == p.id }
+        prototypes.add(p)
     }
 
-    /**
-     * Removes a prototype by its ID.
-     */
-    fun removePrototype(id: String): Boolean {
-        return synchronized(prototypeList) {
-            prototypeList.removeAll { it.id == id }
-        }
-    }
+    @Synchronized
+    fun removePrototype(id: String) = prototypes.removeAll { it.id == id }
 
-    /**
-     * Clears all enrolled prototypes from memory.
-     */
+    @Synchronized
     fun clearPrototypes() {
-        synchronized(prototypeList) {
-            prototypeList.clear()
-        }
+        prototypes.clear()
     }
 
-    /**
-     * Returns an immutable copy of currently enrolled prototypes.
-     */
-    fun getPrototypes(): List<GesturePrototype> {
-        return synchronized(prototypeList) {
-            ArrayList(prototypeList)
-        }
-    }
+    @Synchronized
+    fun getPrototypes(): List<GesturePrototype> = prototypes.toList()
 
-    /**
-     * Matches a live temporal sequence against all enrolled prototypes using DTW.
-     *
-     * @param liveSequence Live sequence snapshot from the temporal buffer
-     * @param threshold Maximum allowable normalized DTW distance (default: [GestureConfig.DEFAULT_RECOGNITION_THRESHOLD])
-     * @param ambiguityMargin Minimum margin required over runner-up class (default: [GestureConfig.DEFAULT_AMBIGUITY_MARGIN])
-     * @return [RecognitionResult] containing nearest match, runner-up, margin, and verdict
-     */
     fun match(
-        liveSequence: TemporalSequence,
+        live: TemporalSequence,
         threshold: Double = GestureConfig.DEFAULT_RECOGNITION_THRESHOLD,
         ambiguityMargin: Double = GestureConfig.DEFAULT_AMBIGUITY_MARGIN
     ): RecognitionResult {
-        val currentPrototypes = getPrototypes()
+        val ps = getPrototypes()
+        if (ps.isEmpty()) return RecognitionResult.noPrototypes(threshold)
+        if (!live.isReady || live.frameCount < GestureConfig.MIN_GESTURE_DURATION_FRAMES) return RecognitionResult.sequenceNotReady(threshold)
 
-        if (currentPrototypes.isEmpty()) {
-            return RecognitionResult.noPrototypes(threshold)
-        }
+        val start = System.nanoTime()
+        val candidates = ps.map { p -> MatchCandidate(p, DTW.computeDistance(live, p.sequence)) }.filter { it.dtwResult.isValid }
+        if (candidates.isEmpty()) return RecognitionResult.unknown(threshold)
 
-        if (!liveSequence.isReady || liveSequence.frameCount < 5) {
-            return RecognitionResult.sequenceNotReady(threshold)
-        }
+        val grouped = candidates.groupBy { it.prototype.displayName.lowercase() }.map { (_, cs) ->
+            val sorted = cs.sortedBy { it.dtwResult.normalizedDistance }
+            val classScore = sorted[0].dtwResult.normalizedDistance
+            GestureClassCandidate(sorted[0], classScore, sorted)
+        }.sortedBy { it.score }
 
-        val startTimeNs = System.nanoTime()
-        val candidates = mutableListOf<MatchCandidate>()
-
-        var bestCandidate: MatchCandidate? = null
-        var minDistance = Double.POSITIVE_INFINITY
-
-        for (proto in currentPrototypes) {
-            val dtwResult = DTW.computeDistance(liveSequence, proto.sequence)
-            val candidate = MatchCandidate(proto, dtwResult)
-            candidates.add(candidate)
-
-            if (dtwResult.isValid && dtwResult.normalizedDistance < minDistance) {
-                minDistance = dtwResult.normalizedDistance
-                bestCandidate = candidate
-            }
-        }
-
-        // Identify closest runner-up from a DIFFERENT gesture class to compute ambiguity margin
-        var runnerUpCandidate: MatchCandidate? = null
-        var runnerUpDistance = Double.POSITIVE_INFINITY
-
-        if (bestCandidate != null) {
-            val bestLabel = bestCandidate.prototype.displayName
-            for (cand in candidates) {
-                if (cand.prototype.displayName != bestLabel && cand.dtwResult.isValid) {
-                    if (cand.dtwResult.normalizedDistance < runnerUpDistance) {
-                        runnerUpDistance = cand.dtwResult.normalizedDistance
-                        runnerUpCandidate = cand
-                    }
-                }
-            }
-        }
-
-        val totalLatencyMs = (System.nanoTime() - startTimeNs) / 1_000_000.0
-        val margin = if (runnerUpDistance.isFinite() && minDistance.isFinite()) {
-            runnerUpDistance - minDistance
-        } else {
-            Double.POSITIVE_INFINITY
-        }
-
-        // Decision logic: Threshold Gating + Ambiguity Gating
-        val passesThreshold = bestCandidate != null && minDistance <= threshold
-        val isAmbiguous = passesThreshold && runnerUpCandidate != null && margin < ambiguityMargin
-
+        val best = grouped.first()
+        val runner = grouped.getOrNull(1)
+        val margin = runner?.let { it.score - best.score } ?: Double.POSITIVE_INFINITY
+        val accepted = best.score <= threshold && (runner == null || margin >= ambiguityMargin)
         val status = when {
-            bestCandidate == null || minDistance.isInfinite() -> MatchStatus.UNKNOWN
-            !passesThreshold -> MatchStatus.UNKNOWN
-            isAmbiguous -> MatchStatus.AMBIGUOUS
+            best.score > threshold -> MatchStatus.UNKNOWN
+            runner != null && margin < ambiguityMargin -> MatchStatus.AMBIGUOUS
             else -> MatchStatus.MATCH
         }
-
-        val isAccepted = status == MatchStatus.MATCH
-
+        val ranked = candidates.sortedBy { it.dtwResult.normalizedDistance }
         return RecognitionResult(
-            bestMatch = bestCandidate?.prototype,
-            nearestDistance = minDistance,
-            runnerUpMatch = runnerUpCandidate?.prototype,
-            runnerUpDistance = runnerUpDistance,
-            margin = if (margin.isInfinite()) 0.0 else margin,
+            bestMatch = best.match.prototype,
+            nearestDistance = best.score,
+            runnerUpMatch = runner?.match?.prototype,
+            runnerUpDistance = runner?.score ?: Double.POSITIVE_INFINITY,
+            margin = if (margin.isFinite()) margin else 0.0,
             threshold = threshold,
-            isAccepted = isAccepted,
+            isAccepted = accepted,
             status = status,
-            candidates = candidates.sortedBy { it.dtwResult.normalizedDistance },
-            totalLatencyMs = totalLatencyMs
+            candidates = ranked,
+            totalLatencyMs = (System.nanoTime() - start) / 1_000_000.0
         )
     }
+
+    private data class GestureClassCandidate(val match: MatchCandidate, val score: Double, val members: List<MatchCandidate>)
 }
