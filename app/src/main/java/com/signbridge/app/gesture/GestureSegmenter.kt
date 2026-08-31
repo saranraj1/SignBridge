@@ -139,10 +139,10 @@ class GestureSegmenter(
 
             SegmenterState.CAPTURING -> {
                 captured.add(frame)
-                if (raw < motionEndVelocityThreshold) {
+                if (raw < motionEndVelocityThreshold || ema < motionEndVelocityThreshold) {
                     low++
                 } else {
-                    low = 0
+                    low = maxOf(0, low - 2)
                 }
 
                 when {
@@ -158,16 +158,19 @@ class GestureSegmenter(
 
     private fun finalizeSequence(reason: String): SegmentationEvent {
         val raw = captured.size
-        var end = captured.lastIndex
-        if (!reason.startsWith("manual")) {
-            while (end > 0) {
-                val v = TemporalSequence.computeInstantaneousVelocity(captured[end - 1], captured[end])
-                if (v >= motionEndVelocityThreshold) break
-                end--
-            }
+        val trimmedFrames = if (!reason.startsWith("manual")) {
+            CanonicalGestureExtractor.trimToActiveGesture(
+                captured,
+                startThreshold = motionStartVelocityThreshold,
+                endThreshold = motionEndVelocityThreshold,
+                preMargin = 2,
+                postMargin = 2
+            )
+        } else {
+            captured
         }
-        end = (end + 2).coerceAtMost(captured.size)
-        val frames = ArrayList(captured.subList(0, end))
+
+        val frames = ArrayList(trimmedFrames)
         if (frames.size < minGestureFrames) {
             val n = frames.size
             reset()

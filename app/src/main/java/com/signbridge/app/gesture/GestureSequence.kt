@@ -71,6 +71,23 @@ data class TemporalSequence(
         }
     }
 
+    fun compute66DTotalChecksum(): Double {
+        val vecs = toFeatureVectors66D()
+        var sum = 0.0
+        for (v in vecs) {
+            for (x in v) sum += x.toDouble()
+        }
+        return sum
+    }
+
+    fun compute66DFrameChecksum(index: Int): Double {
+        val vecs = toFeatureVectors66D()
+        if (index !in vecs.indices) return 0.0
+        var sum = 0.0
+        for (x in vecs[index]) sum += x.toDouble()
+        return sum
+    }
+
     fun computeFrameChecksum(index: Int): Double = frames.getOrNull(index)?.let { f ->
         f.landmarks.sumOf { (it.x + it.y + it.z).toDouble() }
     } ?: 0.0

@@ -473,7 +473,9 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         if (enrollmentController.isTeaching) {
             // Teach Mode: Register sample into enrollment FSM
             sampleCaptured = enrollmentController.registerSegmentedSample(completedSeq)
-            Log.i("TeachMode", "Registered Sample ${enrollmentController.capturedCount}/3 (frames=${completedSeq.frameCount})")
+            if (sampleCaptured) {
+                Log.i("TeachMode", "Registered Sample ${enrollmentController.capturedCount}/3 (frames=${completedSeq.frameCount})")
+            }
         } else {
             // Live Recognition Mode: Execute DTW ONCE
             displayState = DisplayLifecycleState.RECOGNIZING
@@ -523,12 +525,20 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     ) {
         val stats = seq.computeStatistics()
         val vStats = stats.velocityStats
+        val total66DChecksum = seq.compute66DTotalChecksum()
+        val f0_66D = seq.compute66DFrameChecksum(0)
+        val fN_66D = seq.compute66DFrameChecksum(seq.frameCount - 1)
+        val rawStartWrist = seq.frames.firstOrNull()?.rawWristPosition
+        val rawEndWrist = seq.frames.lastOrNull()?.rawWristPosition
+        val fv = seq.toFeatureVectors66D()
+        val trajEnd = if (fv.isNotEmpty()) "dx=${String.format("%.3f", fv.last()[63])}, dy=${String.format("%.3f", fv.last()[64])}, dz=${String.format("%.3f", fv.last()[65])}" else "N/A"
 
         Log.i(tag, "══════════════════════════════════════════════════════════")
         Log.i(tag, "[$stage] SeqID=${seq.sequenceId} | Frames=${seq.frameCount} | Dur=${seq.durationMs}ms | EndReason=$endReason")
         Log.i(tag, "  Handedness: ${stats.dominantHandedness} | Scale: ${String.format("%.4f", stats.averageHandScale)}")
-        Log.i(tag, "  Checksums: Total=${String.format("%.4f", stats.totalChecksum)} | Frame[0]=${String.format("%.4f", stats.firstFrameChecksum)} | Frame[N-1]=${String.format("%.4f", stats.lastFrameChecksum)}")
-        Log.i(tag, "  Bounds: X=[${String.format("%.3f", stats.minX)}..${String.format("%.3f", stats.maxX)}], Y=[${String.format("%.3f", stats.minY)}..${String.format("%.3f", stats.maxY)}], Z=[${String.format("%.3f", stats.minZ)}..${String.format("%.3f", stats.maxZ)}]")
+        Log.i(tag, "  66-D Dimension: 66 | 66-D Checksums: Total=${String.format("%.4f", total66DChecksum)} | F[0]=${String.format("%.4f", f0_66D)} | F[N-1]=${String.format("%.4f", fN_66D)}")
+        Log.i(tag, "  63-D Checksums: Total=${String.format("%.4f", stats.totalChecksum)} | F[0]=${String.format("%.4f", stats.firstFrameChecksum)} | F[N-1]=${String.format("%.4f", stats.lastFrameChecksum)}")
+        Log.i(tag, "  Spatial Trajectory: StartRaw=(${String.format("%.3f", rawStartWrist?.x ?: 0f)}, ${String.format("%.3f", rawStartWrist?.y ?: 0f)}, ${String.format("%.3f", rawStartWrist?.z ?: 0f)}) -> EndRaw=(${String.format("%.3f", rawEndWrist?.x ?: 0f)}, ${String.format("%.3f", rawEndWrist?.y ?: 0f)}, ${String.format("%.3f", rawEndWrist?.z ?: 0f)}) | CumulativeNorm: [$trajEnd]")
         Log.i(tag, "  Velocity: [${vStats.formatSummary()}] | MotionVar=${String.format("%.4f", stats.motionVariance)}")
         Log.i(tag, "  Motion Profile: ${seq.formatMotionProfile()}")
         Log.i(tag, "══════════════════════════════════════════════════════════")
