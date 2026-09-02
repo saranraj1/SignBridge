@@ -14,3 +14,6 @@ models/*.pt
 models/*.pth
 .kotlin/
 .reentry/
+.vscode/
+*.log
+*.zip

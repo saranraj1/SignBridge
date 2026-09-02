@@ -82,30 +82,25 @@ class HandLandmarkerHelper(
      */
     fun detectLiveStream(imageProxy: ImageProxy, isFrontCamera: Boolean = false) {
         val frameTime = SystemClock.uptimeMillis()
-
-        val bitmapBuffer = Bitmap.createBitmap(
-            imageProxy.width,
-            imageProxy.height,
-            Bitmap.Config.ARGB_8888
-        )
-
         val rotationDegrees = imageProxy.imageInfo.rotationDegrees
 
-        // Convert ImageProxy to Bitmap
+        // Convert ImageProxy to Bitmap and close proxy immediately
         val bitmap = imageProxy.toBitmap()
+        val srcWidth = imageProxy.width
+        val srcHeight = imageProxy.height
         imageProxy.close()
 
         val matrix = Matrix().apply {
-            // Rotate the frame to match device screen orientation
-            postRotate(rotationDegrees.toFloat())
             if (isFrontCamera) {
-                // Mirror horizontally for front-facing camera preview
-                postScale(-1f, 1f, imageProxy.width.toFloat(), imageProxy.height.toFloat())
+                // Mirror horizontally around bitmap center before rotation
+                preScale(-1f, 1f, srcWidth / 2f, srcHeight / 2f)
             }
+            // Rotate to match device screen orientation
+            postRotate(rotationDegrees.toFloat())
         }
 
         val rotatedBitmap = Bitmap.createBitmap(
-            bitmap, 0, 0, bitmap.width, bitmap.height,
+            bitmap, 0, 0, srcWidth, srcHeight,
             matrix, true
         )
 
