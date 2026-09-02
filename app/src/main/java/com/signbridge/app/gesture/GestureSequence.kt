@@ -56,7 +56,7 @@ data class TemporalSequence(
     /**
      * Production representation: Each frame contains 63-D hand shape plus 3-D cumulative wrist displacement.
      */
-    fun toFeatureVectors66D(): List<FloatArray> {
+    fun toFeatureVectors66D(trajWeight: Float = 1.0f): List<FloatArray> {
         if (frames.isEmpty()) return emptyList()
         val baseWrist = frames.first().rawWristPosition
         val baseScale = frames.map { it.handScale }.sorted()[frames.size / 2].coerceAtLeast(1e-5f)
@@ -64,9 +64,9 @@ data class TemporalSequence(
             val v = FloatArray(66)
             val shape = frame.toFeatureVector()
             System.arraycopy(shape, 0, v, 0, 63)
-            v[63] = (frame.rawWristPosition.x - baseWrist.x) / baseScale
-            v[64] = (frame.rawWristPosition.y - baseWrist.y) / baseScale
-            v[65] = (frame.rawWristPosition.z - baseWrist.z) / baseScale
+            v[63] = ((frame.rawWristPosition.x - baseWrist.x) / baseScale) * trajWeight
+            v[64] = ((frame.rawWristPosition.y - baseWrist.y) / baseScale) * trajWeight
+            v[65] = ((frame.rawWristPosition.z - baseWrist.z) / baseScale) * trajWeight
             v
         }
     }

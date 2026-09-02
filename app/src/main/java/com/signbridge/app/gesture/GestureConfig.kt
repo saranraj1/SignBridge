@@ -6,7 +6,8 @@ object GestureConfig {
     const val DEFAULT_NORMALIZATION_ENABLED = true
 
     // Recognition is based on empirical 66-D shape + trajectory features.
-    const val DEFAULT_RECOGNITION_THRESHOLD = 0.26
+    // Calibrated for real-device human performance with in-plane rotation invariance.
+    const val DEFAULT_RECOGNITION_THRESHOLD = 0.32
     const val DEFAULT_AMBIGUITY_MARGIN = 0.08
 
     // Segmentation: velocity is EMA-smoothed and includes normalized hand-shape motion
@@ -21,4 +22,8 @@ object GestureConfig {
     const val MIN_GESTURE_DURATION_FRAMES = 6
     const val MAX_GESTURE_DURATION_FRAMES = 90
     const val RESULT_DISPLAY_DURATION_MS = 2500L
+
+    // Static posture detection: capture stable hand shapes held still
+    const val STATIC_POSTURE_HOLD_FRAMES = 12
+    const val STATIC_POSTURE_VELOCITY_THRESHOLD = 0.016f
 }

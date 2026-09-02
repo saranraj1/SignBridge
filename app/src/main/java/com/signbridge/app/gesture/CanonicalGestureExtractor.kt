@@ -15,7 +15,8 @@ import kotlin.math.min
 object CanonicalGestureExtractor {
 
     /**
-     * Trims leading and trailing stillness from raw frames.
+     * Trims leading and trailing stillness from raw frames while strictly preserving
+     * internal gesture pauses and rejecting trailing exit noise.
      */
     fun trimToActiveGesture(
         rawFrames: List<NormalizedLandmarkFrame>,
@@ -48,44 +49,50 @@ object CanonicalGestureExtractor {
         }
 
         // 2. Find Motion End Index:
-        // Look for the last active motion frame. If there is a sustained stillness block (>= 4 frames < endThreshold),
-        // any subsequent motion is post-gesture withdrawal/exit motion, so the gesture ends before the stillness.
-        var motionEndIndex = rawFrames.lastIndex
-        var consecutiveStill = 0
-        var foundStillnessBreak = -1
-
-        for (i in motionStartIndex until rawFrames.size) {
-            if (velocities[i] < endThreshold) {
-                consecutiveStill++
-                if (consecutiveStill >= 4 && foundStillnessBreak == -1) {
-                    foundStillnessBreak = i - consecutiveStill
+        // Scan backwards from the end of the sequence to find the last significant active motion (>= endThreshold).
+        // This ensures all internal pauses (e.g. SSSS in the middle of MMMMSSSSMM) are preserved.
+        // If there are isolated trailing noise spikes (1 frame) after a long stillness block (>= 4 frames),
+        // they are ignored so trailing withdrawal noise does not extend the gesture.
+        var motionEndIndex = -1
+        for (i in rawFrames.lastIndex downTo motionStartIndex) {
+            if (velocities[i] >= endThreshold) {
+                var isIsolatedTrailingNoise = false
+                if (i > motionStartIndex + 4) {
+                    var precedingStillCount = 0
+                    for (k in i - 1 downTo motionStartIndex) {
+                        if (velocities[k] < endThreshold) {
+                            precedingStillCount++
+                        } else {
+                            break
+                        }
+                    }
+                    if (precedingStillCount >= 4) {
+                        var trailingActiveCount = 0
+                        for (k in i until rawFrames.size) {
+                            if (velocities[k] >= endThreshold) trailingActiveCount++
+                        }
+                        if (trailingActiveCount < 2) {
+                            isIsolatedTrailingNoise = true
+                        }
+                    }
                 }
-            } else {
-                consecutiveStill = 0
-            }
-        }
 
-        if (foundStillnessBreak != -1 && foundStillnessBreak >= motionStartIndex) {
-            motionEndIndex = foundStillnessBreak
-        } else {
-            for (i in rawFrames.lastIndex downTo motionStartIndex) {
-                if (velocities[i] >= endThreshold) {
+                if (!isIsolatedTrailingNoise) {
                     motionEndIndex = i
                     break
                 }
             }
         }
 
-        val activeFrameSpan = motionEndIndex - motionStartIndex + 1
-        if (activeFrameSpan < 3) {
-            return emptyList()
+        if (motionEndIndex == -1 || motionEndIndex < motionStartIndex) {
+            motionEndIndex = motionStartIndex
         }
 
         val startIndex = max(0, motionStartIndex - preMargin)
         val endIndex = min(rawFrames.size, motionEndIndex + postMargin + 1)
 
-        if (startIndex >= endIndex) {
-            return emptyList()
+        if (startIndex >= endIndex || (endIndex - startIndex) < 3) {
+            return rawFrames
         }
 
         return rawFrames.subList(startIndex, endIndex)

@@ -62,15 +62,32 @@ class LandmarkNormalizer(
             return null
         }
 
-        // 3. Perform translation and scale normalization for all 21 landmarks
+        // 3. Compute in-plane rotation alignment
+        // Aligns the vector from Wrist (0) to Middle MCP (9) with the vertical axis (0, -1, 0)
+        val len2D = sqrt(dxScale * dxScale + dyScale * dyScale)
+        val cosPhi: Float
+        val sinPhi: Float
+        if (len2D > 1e-5f) {
+            cosPhi = -dyScale / len2D
+            sinPhi = -dxScale / len2D
+        } else {
+            cosPhi = 1f
+            sinPhi = 0f
+        }
+
+        // 4. Perform translation, in-plane rotation, and scale normalization for all 21 landmarks
         val normalizedPoints = ArrayList<NormalizedLandmarkPoint>(21)
         for (landmark in rawLandmarks) {
             val transX = landmark.x - wrist.x
             val transY = landmark.y - wrist.y
             val transZ = landmark.z - wrist.z
 
-            val normX = transX / handScale
-            val normY = transY / handScale
+            // Rotate around wrist in 2D image plane
+            val rotX = transX * cosPhi - transY * sinPhi
+            val rotY = transX * sinPhi + transY * cosPhi
+
+            val normX = rotX / handScale
+            val normY = rotY / handScale
             val normZ = transZ / handScale
 
             normalizedPoints.add(NormalizedLandmarkPoint(normX, normY, normZ))
@@ -86,7 +103,7 @@ class LandmarkNormalizer(
     }
 
     /**
-     * Phase 6: Diagnostic logger for verifying normalization properties.
+     * Diagnostic logger for verifying normalization properties.
      */
     fun logDiagnosticVerification(rawHand: HandLandmarkData, normFrame: NormalizedLandmarkFrame) {
         val rawWrist = rawHand.landmarks[WRIST_INDEX]
@@ -105,6 +122,7 @@ class LandmarkNormalizer(
             "NORM VERIFY: scale=${String.format("%.4f", normFrame.handScale)} | " +
                     "rawWrist=(${String.format("%.3f", rawWrist.x)}, ${String.format("%.3f", rawWrist.y)}, ${String.format("%.3f", rawWrist.z)}) | " +
                     "normWrist=(${String.format("%.3f", normWrist.x)}, ${String.format("%.3f", normWrist.y)}, ${String.format("%.3f", normWrist.z)}) | " +
+                    "normMiddle=(${String.format("%.3f", normMiddle.x)}, ${String.format("%.3f", normMiddle.y)}, ${String.format("%.3f", normMiddle.z)}) | " +
                     "normMiddleDist=${String.format("%.4f", normDist)} (should be 1.0000)"
         )
     }

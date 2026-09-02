@@ -158,17 +158,14 @@ class GestureSegmenter(
 
     private fun finalizeSequence(reason: String): SegmentationEvent {
         val raw = captured.size
-        val trimmedFrames = if (!reason.startsWith("manual")) {
-            CanonicalGestureExtractor.trimToActiveGesture(
-                captured,
-                startThreshold = motionStartVelocityThreshold,
-                endThreshold = motionEndVelocityThreshold,
-                preMargin = 2,
-                postMargin = 2
-            )
-        } else {
-            captured
-        }
+        val trimmed = CanonicalGestureExtractor.trimToActiveGesture(
+            captured,
+            startThreshold = motionStartVelocityThreshold,
+            endThreshold = motionEndVelocityThreshold,
+            preMargin = 2,
+            postMargin = 2
+        )
+        val trimmedFrames = if (trimmed.isNotEmpty()) trimmed else captured
 
         val frames = ArrayList(trimmedFrames)
         if (frames.size < minGestureFrames) {

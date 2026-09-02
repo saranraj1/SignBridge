@@ -100,7 +100,60 @@ class LandmarkNormalizerTest {
     }
 
     /**
-     * TEST 4: Invalid landmark count rejection.
+     * TEST 5: In-plane rotation normalization (Tilt Invariance).
+     * Given a hand tilted at 0°, 30°, and -45°, verify that after normalization,
+     * the landmarks produce identical coordinates.
+     */
+    @Test
+    fun testRotationNormalization_tiltInvariance() {
+        val wristX = 0.5f
+        val wristY = 0.6f
+        val scale = 0.2f
+
+        // Base untilted hand points
+        val basePoints = ArrayList<LandmarkPoint>(21)
+        for (i in 0 until 21) {
+            val localX = (i % 4 - 1.5f) * 0.03f * scale
+            val localY = -(i * 0.04f * scale)
+            val localZ = (i * 0.005f * scale)
+            basePoints.add(LandmarkPoint(wristX + localX, wristY + localY, localZ))
+        }
+
+        // Tilted hand points (rotated by 35 degrees around wrist)
+        val angleRad = Math.toRadians(35.0)
+        val cosA = kotlin.math.cos(angleRad).toFloat()
+        val sinA = kotlin.math.sin(angleRad).toFloat()
+
+        val tiltedPoints = ArrayList<LandmarkPoint>(21)
+        for (p in basePoints) {
+            val dx = p.x - wristX
+            val dy = p.y - wristY
+            val rotX = dx * cosA - dy * sinA
+            val rotY = dx * sinA + dy * cosA
+            tiltedPoints.add(LandmarkPoint(wristX + rotX, wristY + rotY, p.z))
+        }
+
+        val handBase = HandLandmarkData("Right", 0.95f, basePoints)
+        val handTilted = HandLandmarkData("Right", 0.95f, tiltedPoints)
+
+        val normBase = normalizer.normalizeHand(handBase, 1000L)
+        val normTilted = normalizer.normalizeHand(handTilted, 1000L)
+
+        assertNotNull(normBase)
+        assertNotNull(normTilted)
+
+        for (i in 0 until 21) {
+            val p1 = normBase!!.landmarks[i]
+            val p2 = normTilted!!.landmarks[i]
+
+            assertEquals("Tilt invariant X mismatch at index $i", p1.x, p2.x, 1e-3f)
+            assertEquals("Tilt invariant Y mismatch at index $i", p1.y, p2.y, 1e-3f)
+            assertEquals("Tilt invariant Z mismatch at index $i", p1.z, p2.z, 1e-3f)
+        }
+    }
+
+    /**
+     * TEST 6: Invalid landmark count rejection.
      */
     @Test
     fun testInvalidLandmarkCount_rejected() {
