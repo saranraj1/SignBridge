@@ -47,6 +47,12 @@ android {
     androidResources {
         noCompress += "task"
     }
+
+    testOptions {
+        unitTests.all {
+            it.jvmArgs("-Xmx512m", "-XX:+UseSerialGC")
+        }
+    }
 }
 
 dependencies {

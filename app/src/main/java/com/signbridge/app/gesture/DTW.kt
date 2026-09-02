@@ -1,5 +1,7 @@
 package com.signbridge.app.gesture
 
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
@@ -7,6 +9,13 @@ import kotlin.math.sqrt
  *
  * Computes the optimal temporal alignment and cumulative Euclidean distance between two
  * 66-dimensional feature sequences (63-D normalized hand shape + 3-D cumulative wrist displacement).
+ *
+ * FIX #4: Added Sakoe-Chiba band constraint.
+ * Without a warping band, DTW can align any frame of sequence A to any frame of sequence B,
+ * meaning a 10-frame gesture can "match" a 90-frame sequence by warping all frames to a
+ * single column. On real devices this produces false positives across unrelated gestures.
+ * The band limits alignment to within ±bandWidth frames of the diagonal, where
+ * bandWidth = ceil(max(N, M) * DTW_SAKOE_CHIBA_BAND_RATIO).
  */
 object DTW {
 
@@ -28,13 +37,24 @@ object DTW {
             return DTWResult.INVALID
         }
 
-        // (N+1) x (M+1) cost matrix with infinity
+        // FIX #4: Sakoe-Chiba band width. 0 means no band (full matrix).
+        // Must be at least |N - M| + 2 so the endpoint (N, M) is reachable for multi-speed variations.
+        val bandWidth = if (GestureConfig.DTW_SAKOE_CHIBA_BAND_RATIO > 0f) {
+            maxOf(abs(n - m) + 2, (maxOf(n, m) * GestureConfig.DTW_SAKOE_CHIBA_BAND_RATIO).toInt())
+        } else {
+            Int.MAX_VALUE
+        }
+
+        // (N+1) x (M+1) cost matrix initialised to infinity
         val dtwMatrix = Array(n + 1) { DoubleArray(m + 1) { Double.POSITIVE_INFINITY } }
         dtwMatrix[0][0] = 0.0
 
         for (i in 1..n) {
             val vecA = seqA[i - 1]
-            for (j in 1..m) {
+            // FIX #4: Only fill cells within the Sakoe-Chiba band
+            val jLo = maxOf(1, i - bandWidth)
+            val jHi = minOf(m, i + bandWidth)
+            for (j in jLo..jHi) {
                 val cost = frameDistance(vecA, seqB[j - 1])
                 if (!cost.isFinite()) return DTWResult.INVALID
 

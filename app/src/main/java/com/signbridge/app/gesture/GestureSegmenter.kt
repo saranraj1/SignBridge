@@ -139,6 +139,8 @@ class GestureSegmenter(
 
             SegmenterState.CAPTURING -> {
                 captured.add(frame)
+
+                // When motion drops below threshold, increment low counter with recovery
                 if (raw < motionEndVelocityThreshold || ema < motionEndVelocityThreshold) {
                     low++
                 } else {

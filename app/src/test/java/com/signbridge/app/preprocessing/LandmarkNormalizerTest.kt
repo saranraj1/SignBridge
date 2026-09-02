@@ -153,7 +153,53 @@ class LandmarkNormalizerTest {
     }
 
     /**
-     * TEST 6: Invalid landmark count rejection.
+     * TEST 7: Handedness Normalization (Left vs Right Mirroring).
+     * Verify that a left hand produces the exact same normalized coordinates as a right hand.
+     */
+    @Test
+    fun testHandednessNormalization_leftMirroredToRight() {
+        val wristX = 0.5f
+        val wristY = 0.6f
+        val scale = 0.2f
+
+        // Right hand points
+        val rightPoints = ArrayList<LandmarkPoint>(21)
+        for (i in 0 until 21) {
+            val localX = (i % 4 - 1.5f) * 0.03f * scale
+            val localY = -(i * 0.04f * scale)
+            val localZ = (i * 0.005f * scale)
+            rightPoints.add(LandmarkPoint(wristX + localX, wristY + localY, localZ))
+        }
+
+        // Left hand points (mirror image in X axis)
+        val leftPoints = ArrayList<LandmarkPoint>(21)
+        for (p in rightPoints) {
+            val dx = p.x - wristX
+            leftPoints.add(LandmarkPoint(wristX - dx, p.y, p.z))
+        }
+
+        val rightHand = HandLandmarkData("Right", 0.95f, rightPoints)
+        val leftHand = HandLandmarkData("Left", 0.95f, leftPoints)
+
+        val normRight = normalizer.normalizeHand(rightHand, 1000L)
+        val normLeft = normalizer.normalizeHand(leftHand, 1000L)
+
+        assertNotNull(normRight)
+        assertNotNull(normLeft)
+        assertEquals("Effective handedness should be normalized to Right", "Right", normLeft!!.handedness)
+
+        for (i in 0 until 21) {
+            val pr = normRight!!.landmarks[i]
+            val pl = normLeft.landmarks[i]
+
+            assertEquals("Handedness normalized X mismatch at index $i", pr.x, pl.x, 1e-4f)
+            assertEquals("Handedness normalized Y mismatch at index $i", pr.y, pl.y, 1e-4f)
+            assertEquals("Handedness normalized Z mismatch at index $i", pr.z, pl.z, 1e-4f)
+        }
+    }
+
+    /**
+     * TEST 8: Invalid landmark count rejection.
      */
     @Test
     fun testInvalidLandmarkCount_rejected() {

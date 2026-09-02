@@ -8,10 +8,23 @@ import kotlin.math.sqrt
 
 /**
  * Normalizes raw hand landmark coordinates to make gesture representations
- * invariant to translation (hand position in frame) and scale (distance from camera).
+ * invariant to translation (hand position in frame), scale (distance from camera),
+ * and — optionally — handedness (left vs right hand).
+ *
+ * FIX #2: Added handedness normalization.
+ * Without it, teaching with a Right hand and performing with a Left hand (or vice versa)
+ * produces feature vectors that are mirror images of each other. Even with perfect
+ * in-plane rotation alignment the 63-D shape vectors differ significantly across hands.
+ * When mirrorToRightHand=true, Left-hand landmarks are reflected about the X axis so
+ * both hands produce structurally identical feature vectors.
+ *
+ * Toggle mirrorToRightHand=false to restore the original behaviour (e.g. if your
+ * use-case always uses the same hand and you want to distinguish left/right signs).
  */
 class LandmarkNormalizer(
-    private val minValidScale: Float = MIN_SCALE_THRESHOLD
+    private val minValidScale: Float = MIN_SCALE_THRESHOLD,
+    /** When true, Left-hand frames are reflected to match Right-hand geometry. */
+    private val mirrorToRightHand: Boolean = true
 ) {
 
     /**
@@ -75,6 +88,11 @@ class LandmarkNormalizer(
             sinPhi = 0f
         }
 
+        // FIX #2: determine if we need to mirror this hand.
+        // MediaPipe reports "Left" for the user's left hand regardless of camera mirroring.
+        val isLeftHand = hand.handedness.equals("Left", ignoreCase = true)
+        val shouldMirror = mirrorToRightHand && isLeftHand
+
         // 4. Perform translation, in-plane rotation, and scale normalization for all 21 landmarks
         val normalizedPoints = ArrayList<NormalizedLandmarkPoint>(21)
         for (landmark in rawLandmarks) {
@@ -86,16 +104,27 @@ class LandmarkNormalizer(
             val rotX = transX * cosPhi - transY * sinPhi
             val rotY = transX * sinPhi + transY * cosPhi
 
-            val normX = rotX / handScale
+            var normX = rotX / handScale
             val normY = rotY / handScale
             val normZ = transZ / handScale
+
+            // FIX #2: Mirror X axis so left-hand produces the same shape as right-hand.
+            // This reflection is applied AFTER rotation so it doesn't disturb alignment.
+            if (shouldMirror) {
+                normX = -normX
+            }
 
             normalizedPoints.add(NormalizedLandmarkPoint(normX, normY, normZ))
         }
 
+        // FIX #2: Store the effective handedness so downstream code can log/track it,
+        // but override to "Right" when mirroring so the segmenter's handedness
+        // consistency check doesn't flag left vs right as a mismatch.
+        val effectiveHandedness = if (shouldMirror) "Right" else hand.handedness
+
         return NormalizedLandmarkFrame(
             timestampMs = timestampMs,
-            handedness = hand.handedness,
+            handedness = effectiveHandedness,
             landmarks = normalizedPoints,
             handScale = handScale,
             rawWristPosition = wrist
@@ -123,7 +152,8 @@ class LandmarkNormalizer(
                     "rawWrist=(${String.format("%.3f", rawWrist.x)}, ${String.format("%.3f", rawWrist.y)}, ${String.format("%.3f", rawWrist.z)}) | " +
                     "normWrist=(${String.format("%.3f", normWrist.x)}, ${String.format("%.3f", normWrist.y)}, ${String.format("%.3f", normWrist.z)}) | " +
                     "normMiddle=(${String.format("%.3f", normMiddle.x)}, ${String.format("%.3f", normMiddle.y)}, ${String.format("%.3f", normMiddle.z)}) | " +
-                    "normMiddleDist=${String.format("%.4f", normDist)} (should be 1.0000)"
+                    "normMiddleDist=${String.format("%.4f", normDist)} (should be 1.0000) | " +
+                    "mirrored=${rawHand.handedness.equals("Left", ignoreCase = true) && mirrorToRightHand}"
         )
     }
 
